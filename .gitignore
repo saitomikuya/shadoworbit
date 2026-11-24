@@ -1,0 +1,25 @@
+# Secrets, keys, and local server credentials
+*.pem
+*.key
+
+# OS and editor metadata
+.DS_Store
+**/.DS_Store
+
+# SQLite databases and runtime data
+*.db
+*.db-wal
+*.db-shm
+data/
+deploy/data/
+
+# Frontend dependencies and build output (rebuilt in CI & Docker)
+web/node_modules/
+web/dist/
+
+# Temporary and local scratch artifacts
+tmp/
+
+# Internal design / requirements docs (excluded per user request)
+requirements.md
+architecture_design.md

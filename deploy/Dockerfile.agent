@@ -1,0 +1,80 @@
+ARG GO_VERSION=1.26-bookworm
+ARG DEBIAN_VERSION=bookworm-slim
+
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION} AS builder
+ARG TARGETOS=linux
+ARG TARGETARCH
+ARG VERSION=dev
+ARG COMMIT=none
+ARG DATE=unknown
+ARG SING_BOX_VERSION=1.14.4
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd ./cmd
+COPY internal ./internal
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
+    -o /out/node-agent ./cmd/agent
+
+RUN set -eu; \
+    mkdir -p /tmp/sing-box-src; \
+    curl -fsSL --retry 3 \
+        "https://github.com/SagerNet/sing-box/archive/refs/tags/v${SING_BOX_VERSION}.tar.gz" \
+        | tar -xz --strip-components=1 -C /tmp/sing-box-src; \
+    cd /tmp/sing-box-src; \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+        go build -trimpath \
+        -tags "with_v2ray_api,with_utls,with_gvisor,with_quic,with_clash_api" \
+        -ldflags="-s -w -X github.com/sagernet/sing-box/constant.Version=${SING_BOX_VERSION}" \
+        -o /out/sing-box ./cmd/sing-box; \
+    rm -rf /tmp/sing-box-src
+
+FROM --platform=$BUILDPLATFORM debian:${DEBIAN_VERSION} AS kernels
+ARG TARGETARCH
+ARG SHADOW_TLS_VERSION=0.2.25
+ARG SNELL_VERSION=5.0.0
+RUN DEBIAN_FRONTEND=noninteractive apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl tar unzip \
+    && rm -rf /var/lib/apt/lists/*
+RUN set -eu; \
+    case "${TARGETARCH}" in \
+        amd64) \
+            STLS_ARCH=x86_64; \
+            SNELL_ARCH=amd64; \
+            ;; \
+        arm64) \
+            STLS_ARCH=aarch64; \
+            SNELL_ARCH=aarch64; \
+            ;; \
+        *) \
+            echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; \
+            exit 1; \
+            ;; \
+    esac; \
+    mkdir -p /out /tmp/kernels; \
+    curl -fsSL --retry 3 \
+        "https://github.com/ihciah/shadow-tls/releases/download/v${SHADOW_TLS_VERSION}/shadow-tls-${STLS_ARCH}-unknown-linux-musl" \
+        -o /out/shadow-tls; \
+    curl -fsSL --retry 3 \
+        "https://dl.nssurge.com/snell/snell-server-v${SNELL_VERSION}-linux-${SNELL_ARCH}.zip" \
+        -o /tmp/kernels/snell-server.zip; \
+    unzip -p /tmp/kernels/snell-server.zip snell-server > /out/snell-server; \
+    chmod +x /out/shadow-tls /out/snell-server; \
+    test -s /out/shadow-tls; \
+    test -s /out/snell-server; \
+    rm -rf /tmp/kernels
+
+FROM debian:${DEBIAN_VERSION}
+RUN DEBIAN_FRONTEND=noninteractive apt-get update \
+    && apt-get install -y --no-install-recommends tini ca-certificates tzdata \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /out/node-agent /out/sing-box /usr/local/bin/
+COPY --from=kernels /out/shadow-tls /out/snell-server /usr/local/bin/
+RUN chmod +x /usr/local/bin/node-agent /usr/local/bin/sing-box /usr/local/bin/shadow-tls /usr/local/bin/snell-server \
+    && mkdir -p /var/lib/snell-panel-agent
+ENV DATA_DIR=/var/lib/snell-panel-agent \
+    TZ=UTC
+VOLUME ["/var/lib/snell-panel-agent"]
+WORKDIR /var/lib/snell-panel-agent
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/node-agent"]

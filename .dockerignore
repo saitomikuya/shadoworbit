@@ -1,0 +1,11 @@
+.git
+.gitignore
+.DS_Store
+*.pem
+*.key
+*.db
+*.db-wal
+*.db-shm
+web/node_modules
+web/dist
+tmp
