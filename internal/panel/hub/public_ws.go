@@ -14,6 +14,11 @@ import (
 	"snell-panel/internal/protocol"
 )
 
+type cachedPublicPayload struct {
+	version uint64
+	payload []byte
+}
+
 type publicClient struct {
 	id     uint64
 	conn   *websocket.Conn
@@ -197,6 +202,68 @@ func (h *Hub) BuildPublicSnapshot(ctx context.Context) (protocol.PublicStatusSna
 	}, nil
 }
 
+func (h *Hub) getOrBuildPublicPayload(ctx context.Context) ([]byte, uint64, error) {
+	if h.store == nil {
+		return nil, 0, errors.New("hub: nil store")
+	}
+	if ctx == nil {
+		ctx = h.baseCtx
+	}
+
+	curVer := h.publicVersion.Load()
+	h.publicCacheMu.RLock()
+	if h.publicCache.payload != nil && h.publicCache.version == curVer {
+		payload := h.publicCache.payload
+		h.publicCacheMu.RUnlock()
+		return payload, curVer, nil
+	}
+	h.publicCacheMu.RUnlock()
+
+	h.publicBuildMu.Lock()
+	defer h.publicBuildMu.Unlock()
+
+	curVer = h.publicVersion.Load()
+	h.publicCacheMu.RLock()
+	if h.publicCache.payload != nil && h.publicCache.version == curVer {
+		payload := h.publicCache.payload
+		h.publicCacheMu.RUnlock()
+		return payload, curVer, nil
+	}
+	h.publicCacheMu.RUnlock()
+
+	snap, err := h.BuildPublicSnapshot(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+	payload, err := json.Marshal(snap)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	if h.publicVersion.Load() == curVer {
+		h.publicCacheMu.Lock()
+		h.publicCache = cachedPublicPayload{
+			version: curVer,
+			payload: payload,
+		}
+		h.publicCacheMu.Unlock()
+	}
+	return payload, curVer, nil
+}
+
+// GetPublicSnapshotJSON returns the marshaled PublicStatusSnapshot JSON using the
+// version-tracked singleflight snapshot cache.
+func (h *Hub) GetPublicSnapshotJSON(ctx context.Context) ([]byte, error) {
+	payload, _, err := h.getOrBuildPublicPayload(ctx)
+	return payload, err
+}
+
+// InvalidatePublicSnapshot bumps the public snapshot version so subsequent reads
+// rebuild fresh state without forcing a WS broadcast.
+func (h *Hub) InvalidatePublicSnapshot() {
+	h.publicVersion.Add(1)
+}
+
 // ServePublicWS upgrades an unauthenticated visitor WebSocket, immediately pushes
 // a redacted PublicStatusSnapshot, and streams debounced updates without blocking on slow clients.
 func (h *Hub) ServePublicWS(w http.ResponseWriter, r *http.Request) {
@@ -233,11 +300,10 @@ func (h *Hub) ServePublicWS(w http.ResponseWriter, r *http.Request) {
 		cancel: cancel,
 	}
 
-	snap, err := h.BuildPublicSnapshot(ctx)
-	if err == nil {
-		if initialBytes, marshalErr := json.Marshal(snap); marshalErr == nil {
-			client.enqueue(initialBytes)
-		}
+	var servedVer uint64
+	if initialBytes, ver, err := h.getOrBuildPublicPayload(ctx); err == nil {
+		servedVer = ver
+		client.enqueue(initialBytes)
 	}
 
 	h.publicMu.Lock()
@@ -249,6 +315,10 @@ func (h *Hub) ServePublicWS(w http.ResponseWriter, r *http.Request) {
 	}
 	h.publicClients[client.id] = client
 	h.publicMu.Unlock()
+
+	if servedVer == 0 || h.publicVersion.Load() != servedVer {
+		h.triggerPublicBroadcast()
+	}
 
 	defer func() {
 		h.publicMu.Lock()
@@ -296,6 +366,7 @@ func (h *Hub) BroadcastPublicStatus() {
 }
 
 func (h *Hub) triggerPublicBroadcast() {
+	h.publicVersion.Add(1)
 	if h.isClosed() {
 		return
 	}
@@ -355,17 +426,12 @@ func (h *Hub) publicBroadcasterLoop() {
 		}
 
 		ctx, cancel := context.WithTimeout(h.baseCtx, 5*time.Second)
-		snap, err := h.BuildPublicSnapshot(ctx)
+		payload, _, err := h.getOrBuildPublicPayload(ctx)
 		cancel()
 		if err != nil {
 			if !errors.Is(err, context.Canceled) {
 				h.logger.Warn("hub: build public snapshot failed", "err", err)
 			}
-			continue
-		}
-		payload, err := json.Marshal(snap)
-		if err != nil {
-			h.logger.Warn("hub: marshal public snapshot failed", "err", err)
 			continue
 		}
 		h.broadcastPublicBytes(payload)

@@ -181,6 +181,7 @@ func TestRenderSnellConf(t *testing.T) {
 func TestShadowTLSArgsAndSNINormalization(t *testing.T) {
 	cfg := validSyncConfig().Snell
 	cfg.STLSSNI = "gateway.icloud.com"
+	cfg.TFO = true
 	args, err := shadowTLSArgs(cfg, 31001)
 	if err != nil {
 		t.Fatalf("shadowTLSArgs failed: %v", err)
@@ -189,6 +190,21 @@ func TestShadowTLSArgsAndSNINormalization(t *testing.T) {
 	want := "--v3 --strict --fastopen server --listen [::]:20001 --server 127.0.0.1:31001 --tls gateway.icloud.com:443 --password snell-stls-pass"
 	if joined != want {
 		t.Fatalf("shadow-tls args mismatch:\n got: %s\nwant: %s", joined, want)
+	}
+
+	cfgNoTFO := cfg
+	cfgNoTFO.TFO = false
+	argsNoTFO, err := shadowTLSArgs(cfgNoTFO, 31001)
+	if err != nil {
+		t.Fatalf("shadowTLSArgs(TFO=false) failed: %v", err)
+	}
+	joinedNoTFO := strings.Join(argsNoTFO, " ")
+	wantNoTFO := "--v3 --strict server --listen [::]:20001 --server 127.0.0.1:31001 --tls gateway.icloud.com:443 --password snell-stls-pass"
+	if joinedNoTFO != wantNoTFO {
+		t.Fatalf("shadow-tls args (TFO=false) mismatch:\n got: %s\nwant: %s", joinedNoTFO, wantNoTFO)
+	}
+	if strings.Join(args, "\x00") == strings.Join(argsNoTFO, "\x00") {
+		t.Fatalf("expected ShadowTLSArgs fingerprint to differ when TFO toggles")
 	}
 
 	cfg.STLSSNI = "gateway.icloud.com:8443"

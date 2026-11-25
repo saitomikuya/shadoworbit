@@ -1930,3 +1930,144 @@ func TestSnellProcIOMeteringAndWAL(t *testing.T) {
 	}
 	_ = ack4()
 }
+
+func TestDetectPublicIPsParallelRaceAndSlowEndpoint(t *testing.T) {
+	v4Slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(2 * time.Second):
+			_, _ = fmt.Fprintln(w, "198.51.100.1")
+		}
+	}))
+	defer v4Slow.Close()
+
+	v4Fast := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(10 * time.Millisecond)
+		_, _ = fmt.Fprintln(w, "203.0.113.55")
+	}))
+	defer v4Fast.Close()
+
+	v6Blackholed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-time.After(3 * time.Second):
+			_, _ = fmt.Fprintln(w, "2001:db8::99")
+		}
+	}))
+	defer v6Blackholed.Close()
+
+	// 1. Slow endpoint 1 + fast endpoint 2 -> returns in < 400ms instead of stalling 1.5s.
+	c1, err := New(Options{
+		DataDir:             t.TempDir(),
+		PublicIPEndpointsV4: []string{v4Slow.URL, v4Fast.URL},
+		PublicIPEndpointsV6: []string{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start1 := time.Now()
+	gotV4, gotV6 := c1.DetectPublicIPs(context.Background())
+	elapsed1 := time.Since(start1)
+	if gotV4 != "203.0.113.55" || gotV6 != "" {
+		t.Fatalf("expected (203.0.113.55, ''), got (%q, %q)", gotV4, gotV6)
+	}
+	if elapsed1 >= 500*time.Millisecond {
+		t.Fatalf("expected parallel race to finish < 500ms, took %v", elapsed1)
+	}
+
+	// 2. All V6 endpoints blackholed + fast V4 -> bounded by 1500ms family timeout (< 1.9s vs 3.0s+ before).
+	c2, err := New(Options{
+		DataDir:             t.TempDir(),
+		PublicIPEndpointsV4: []string{v4Fast.URL},
+		PublicIPEndpointsV6: []string{v6Blackholed.URL, v6Blackholed.URL},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start2 := time.Now()
+	gotV4, gotV6 = c2.DetectPublicIPs(context.Background())
+	elapsed2 := time.Since(start2)
+	if gotV4 != "203.0.113.55" || gotV6 != "" {
+		t.Fatalf("expected (203.0.113.55, ''), got (%q, %q)", gotV4, gotV6)
+	}
+	if elapsed2 >= 1900*time.Millisecond {
+		t.Fatalf("expected blackholed IPv6 probe bounded < 1.9s, took %v", elapsed2)
+	}
+}
+
+func TestCollectorWALSyncThrottlingAndFlush(t *testing.T) {
+	dir := t.TempDir()
+	netDevPath := filepath.Join(dir, "proc_net_dev")
+	procRoot := t.TempDir()
+	writeProcIO := func(rchar, wchar uint64) {
+		p := filepath.Join(procRoot, "101", "io")
+		_ = os.MkdirAll(filepath.Dir(p), 0o750)
+		_ = os.WriteFile(p, []byte(fmt.Sprintf("rchar: %d\nwchar: %d\n", rchar, wchar)), 0o600)
+	}
+	writeDev := func(rx, tx uint64) {
+		_ = os.WriteFile(netDevPath, []byte(formatProcNetDev(struct {
+			iface string
+			rx    uint64
+			tx    uint64
+			tight bool
+		}{"eth0", rx, tx, false})), 0o600)
+	}
+
+	writeDev(1000, 2000)
+	writeProcIO(500, 500)
+
+	c, err := New(Options{
+		DataDir:         dir,
+		ProcNetDevPath:  netDevPath,
+		ProcRoot:        procRoot,
+		Interface:       "eth0",
+		SnellPIDFunc:    func() int { return 101 },
+		WALSyncInterval: 30 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Baseline poll: 0 writes
+	if err := c.PollOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Subsequent 3 coalesced polls: 3 writes (not 6!), only first write fsyncs (2 fsyncs total).
+	for i := 1; i <= 3; i++ {
+		writeDev(uint64(1000+i*100), uint64(2000+i*200))
+		writeProcIO(uint64(500+i*50), uint64(500+i*50))
+		if err := c.PollOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writes, fsyncs := c.WALStats()
+	if writes != 3 {
+		t.Fatalf("expected 3 coalesced WAL writes, got %d", writes)
+	}
+	if fsyncs != 2 {
+		t.Fatalf("expected 2 initial fsyncs (throttled subsequent), got %d", fsyncs)
+	}
+
+	// Stop() must flush pending unsynced WAL to disk with fsync.
+	c.Stop()
+	_, fsyncsAfterStop := c.WALStats()
+	if fsyncsAfterStop != 4 {
+		t.Fatalf("expected FlushWAL on Stop() to perform 2 more fsyncs (total 4), got %d", fsyncsAfterStop)
+	}
+
+	// Verify WAL on disk reflects all 3 polls.
+	raw, err := os.ReadFile(filepath.Join(dir, "pending_traffic.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st walState
+	if err := json.Unmarshal(raw, &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.NICRxDelta != 300 || st.NICTxDelta != 600 || st.AdminSnellBytes != 150 {
+		t.Fatalf("unexpected WAL state on disk: %+v", st)
+	}
+}

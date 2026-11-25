@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/grpc"
@@ -31,6 +33,7 @@ const (
 	defaultDiskPath         = "/"
 	defaultNICInterval      = 5 * time.Second
 	defaultStatsInterval    = 10 * time.Second
+	defaultWALSyncInterval  = 30 * time.Second
 )
 
 // Options configures the dual-layer traffic collector and WAL.
@@ -49,6 +52,7 @@ type Options struct {
 	SnellPIDFunc        func() int
 	NICInterval         time.Duration
 	StatsInterval       time.Duration
+	WALSyncInterval     time.Duration
 	PublicIPEndpointsV4 []string
 	PublicIPEndpointsV6 []string
 	HTTPClient          *http.Client
@@ -95,9 +99,15 @@ type Collector struct {
 	statsEnabled bool
 	activeUsers  map[string]int64
 
-	mu       sync.Mutex
-	wal      walState
-	stageSeq uint64
+	mu              sync.Mutex
+	wal             walState
+	stageSeq        uint64
+	walSyncInterval time.Duration
+	lastWALSync     time.Time
+	walUnsynced     bool
+
+	walWrites atomic.Int64
+	walFsyncs atomic.Int64
 }
 
 // New constructs a Collector and loads or recovers its pending traffic WAL.
@@ -140,6 +150,10 @@ func New(opts Options) (*Collector, error) {
 	if opts.StatsInterval <= 0 {
 		opts.StatsInterval = defaultStatsInterval
 	}
+	walSyncInterval := opts.WALSyncInterval
+	if walSyncInterval == 0 {
+		walSyncInterval = defaultWALSyncInterval
+	}
 	logger := opts.Logger
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -150,12 +164,13 @@ func New(opts Options) (*Collector, error) {
 	}
 
 	c := &Collector{
-		opts:         opts,
-		logger:       logger,
-		walPath:      opts.WALPath,
-		statsEnabled: true,
-		activeUsers:  make(map[string]int64),
-		wal:          newEmptyWAL(),
+		opts:            opts,
+		logger:          logger,
+		walPath:         opts.WALPath,
+		statsEnabled:    true,
+		activeUsers:     make(map[string]int64),
+		wal:             newEmptyWAL(),
+		walSyncInterval: walSyncInterval,
 	}
 	if err := c.loadWAL(); err != nil {
 		return nil, err
@@ -194,11 +209,10 @@ func (c *Collector) SetActiveUsers(users []protocol.SSUserEntry) {
 		}
 	}
 	if changed {
-		if err := writeWALAtomic(c.walPath, next); err != nil {
+		if err := c.commitWALWriteLocked(next, false); err != nil {
 			c.logger.Warn("failed to persist backfilled user IDs to WAL", "error", err)
 			return
 		}
-		c.wal = next
 	}
 }
 
@@ -209,12 +223,42 @@ func (c *Collector) SetStatsEnabled(enabled bool) {
 	c.userMu.Unlock()
 }
 
-// PollOnce performs one synchronous NIC poll, Snell process I/O poll, and one synchronous gRPC Stats poll.
+// PollOnce performs one synchronous coalesced NIC, Snell process I/O, and gRPC Stats poll.
 func (c *Collector) PollOnce(ctx context.Context) error {
-	nicErr := c.pollNIC()
-	c.pollSnellIO()
-	statsErr := c.pollStats(ctx)
-	return errors.Join(nicErr, statsErr)
+	rxDelta, txDelta, commitNIC, nicErr := c.sampleNIC()
+	snellDelta, commitSnell := c.sampleSnellIO()
+	userDeltas, activeSnapshot, statsErr := c.fetchUserDeltas(ctx)
+
+	walErr := c.addCombinedDeltas(rxDelta, txDelta, snellDelta, userDeltas, activeSnapshot)
+	if walErr == nil {
+		if commitNIC != nil {
+			commitNIC()
+		}
+		if commitSnell != nil {
+			commitSnell()
+		}
+	} else {
+		walErr = fmt.Errorf("persist poll deltas: %w", walErr)
+	}
+	return errors.Join(nicErr, statsErr, walErr)
+}
+
+func (c *Collector) pollHostTraffic() error {
+	rxDelta, txDelta, commitNIC, nicErr := c.sampleNIC()
+	snellDelta, commitSnell := c.sampleSnellIO()
+
+	walErr := c.addCombinedDeltas(rxDelta, txDelta, snellDelta, nil, nil)
+	if walErr == nil {
+		if commitNIC != nil {
+			commitNIC()
+		}
+		if commitSnell != nil {
+			commitSnell()
+		}
+	} else {
+		walErr = fmt.Errorf("persist host traffic deltas: %w", walErr)
+	}
+	return errors.Join(nicErr, walErr)
 }
 
 // Start begins background NIC and Stats polling loops until ctx is cancelled or Stop is called.
@@ -255,14 +299,16 @@ func (c *Collector) Stop() {
 		c.wg.Wait()
 	}
 	c.closeGRPC()
+	if err := c.FlushWAL(); err != nil {
+		c.logger.Warn("flush WAL on stop failed", "error", err)
+	}
 }
 
 func (c *Collector) runNICLoop(ctx context.Context) {
 	defer c.wg.Done()
-	if err := c.pollNIC(); err != nil && ctx.Err() == nil {
-		c.logger.Warn("NIC poll failed", "error", err)
+	if err := c.pollHostTraffic(); err != nil && ctx.Err() == nil {
+		c.logger.Warn("host traffic poll failed", "error", err)
 	}
-	c.pollSnellIO()
 	ticker := time.NewTicker(c.opts.NICInterval)
 	defer ticker.Stop()
 
@@ -271,10 +317,9 @@ func (c *Collector) runNICLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := c.pollNIC(); err != nil && ctx.Err() == nil {
-				c.logger.Warn("NIC poll failed", "error", err)
+			if err := c.pollHostTraffic(); err != nil && ctx.Err() == nil {
+				c.logger.Warn("host traffic poll failed", "error", err)
 			}
-			c.pollSnellIO()
 		}
 	}
 }
@@ -425,10 +470,9 @@ func (c *Collector) stageMetrics(ctx context.Context, health protocol.AgentHealt
 			}
 		}
 
-		if err := writeWALAtomic(c.walPath, next); err != nil {
+		if err := c.commitWALWriteLocked(next, false); err != nil {
 			return err
 		}
-		c.wal = next
 		acked = true
 		return nil
 	}
@@ -437,31 +481,47 @@ func (c *Collector) stageMetrics(ctx context.Context, health protocol.AgentHealt
 }
 
 func (c *Collector) pollSnellIO() {
+	delta, commit := c.sampleSnellIO()
+	if delta > 0 {
+		if err := c.addAdminSnellDelta(delta); err != nil {
+			c.logger.Warn("persist admin snell delta failed", "error", err)
+			return
+		}
+	}
+	if commit != nil {
+		commit()
+	}
+}
+
+func (c *Collector) sampleSnellIO() (uint64, func()) {
 	if c.opts.SnellPIDFunc == nil {
-		return
+		return 0, nil
 	}
 	pid := c.opts.SnellPIDFunc()
-	c.snellMu.Lock()
-	defer c.snellMu.Unlock()
-
 	if pid <= 0 {
+		c.snellMu.Lock()
 		c.lastSnellPID = 0
-		return
+		c.snellMu.Unlock()
+		return 0, nil
 	}
+
 	ioPath := filepath.Join(c.opts.ProcRoot, strconv.Itoa(pid), "io")
 	raw, err := os.ReadFile(ioPath)
 	if err != nil {
-		return
+		return 0, nil
 	}
 	rchar, wchar, ok := parseProcPIDIO(raw)
 	if !ok {
-		return
+		return 0, nil
 	}
+
+	c.snellMu.Lock()
 	if pid != c.lastSnellPID {
 		c.lastSnellPID = pid
 		c.lastSnellRChar = rchar
 		c.lastSnellWChar = wchar
-		return
+		c.snellMu.Unlock()
+		return 0, nil
 	}
 
 	var rDelta, wDelta uint64
@@ -471,15 +531,18 @@ func (c *Collector) pollSnellIO() {
 	if wchar >= c.lastSnellWChar {
 		wDelta = wchar - c.lastSnellWChar
 	}
-	c.lastSnellRChar = rchar
-	c.lastSnellWChar = wchar
+	c.snellMu.Unlock()
 
 	delta := min(rDelta, wDelta)
-	if delta > 0 {
-		if err := c.addAdminSnellDelta(delta); err != nil {
-			c.logger.Warn("persist admin snell delta failed", "error", err)
+	commit := func() {
+		c.snellMu.Lock()
+		if c.lastSnellPID == pid {
+			c.lastSnellRChar = rchar
+			c.lastSnellWChar = wchar
 		}
+		c.snellMu.Unlock()
 	}
+	return delta, commit
 }
 
 func parseProcPIDIO(raw []byte) (rchar, wchar uint64, ok bool) {

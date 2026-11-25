@@ -250,9 +250,56 @@ func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
 	return out, nil
 }
 
+type queryRower interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 // UpdateNode updates configuration and metadata fields of a node while preserving
 // runtime telemetry and cycle traffic counters.
 func (s *Store) UpdateNode(ctx context.Context, node *Node) error {
+	return updateNodeWithQuerier(ctx, s.db, node)
+}
+
+// UpdateNodeTx atomically loads a node by id inside a transaction, applies fn to
+// produce the updated node state, persists it via the transaction handle, and
+// returns the committed node row.
+func (s *Store) UpdateNodeTx(ctx context.Context, id int64, fn func(existing *Node) (*Node, error)) (*Node, error) {
+	if id <= 0 {
+		return nil, fmt.Errorf("%w: invalid node id", ErrInvalidArgument)
+	}
+	if fn == nil {
+		return nil, fmt.Errorf("%w: nil update callback", ErrInvalidArgument)
+	}
+
+	var committed *Node
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		existing, err := scanNode(tx.QueryRowContext(ctx, `SELECT `+nodeColumns+` FROM nodes WHERE id = ?`, id))
+		if err != nil {
+			return err
+		}
+
+		updated, err := fn(existing)
+		if err != nil {
+			return err
+		}
+		if updated == nil {
+			return fmt.Errorf("%w: invalid node", ErrInvalidArgument)
+		}
+		updated.ID = id
+		if err := updateNodeWithQuerier(ctx, tx, updated); err != nil {
+			return err
+		}
+
+		committed, err = scanNode(tx.QueryRowContext(ctx, `SELECT `+nodeColumns+` FROM nodes WHERE id = ?`, id))
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return committed, nil
+}
+
+func updateNodeWithQuerier(ctx context.Context, q queryRower, node *Node) error {
 	if node == nil || node.ID <= 0 {
 		return fmt.Errorf("%w: invalid node", ErrInvalidArgument)
 	}
@@ -290,7 +337,7 @@ func (s *Store) UpdateNode(ctx context.Context, node *Node) error {
 	node.UpdatedAt = now
 
 	var keptIPv4, keptIPv6 string
-	err = s.db.QueryRowContext(ctx, `
+	err = q.QueryRowContext(ctx, `
 UPDATE nodes SET
     name = ?,
     region_tag = ?,

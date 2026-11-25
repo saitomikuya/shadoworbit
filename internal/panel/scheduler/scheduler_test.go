@@ -420,3 +420,43 @@ func TestScheduler_OnTrafficUpdated_SessionCancelResilience(t *testing.T) {
 		return hasPaused && hasQuota
 	}, "both traffic_paused and user_quota_exhausted alerts emitted")
 }
+
+func TestScheduler_PeriodicTrafficLogPruning(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+
+	n, _ := createTestNode(t, st, "prune-node", true)
+	u := createTestUser(t, st, "prune-user", true)
+	if err := st.SetSetting(ctx, "traffic_log_max_entries", "3"); err != nil {
+		t.Fatal(err)
+	}
+
+	base := time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC)
+	for i := 0; i < 6; i++ {
+		if _, err := st.ApplyTrafficDeltasAt(ctx, n.ID, 10, 20, []protocol.UserTrafficDelta{
+			{UserID: u.ID, UpBytes: 5, DownBytes: 5},
+		}, base.Add(time.Duration(i)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	beforeCnt, err := st.CountTrafficUsageLogs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if beforeCnt != 6 {
+		t.Fatalf("expected 6 logs before periodic prune, got %d", beforeCnt)
+	}
+
+	sched := scheduler.NewScheduler(st, nil, nil,
+		scheduler.WithSweepInterval(50*time.Millisecond),
+		scheduler.WithTrafficLogPruneInterval(20*time.Millisecond),
+	)
+	sched.Start(ctx)
+	defer sched.Stop()
+
+	waitUntil(t, 2*time.Second, func() bool {
+		cnt, err := st.CountTrafficUsageLogs(ctx)
+		return err == nil && cnt == 3
+	}, "periodic scheduler pruning reduces traffic_usage_logs to 3")
+}

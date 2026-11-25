@@ -57,6 +57,11 @@ type Hub struct {
 	publicMu      sync.Mutex
 	publicClients map[uint64]*publicClient
 	publicDirtyCh chan struct{}
+
+	publicVersion atomic.Uint64
+	publicBuildMu sync.Mutex
+	publicCacheMu sync.RWMutex
+	publicCache   cachedPublicPayload
 }
 
 // NewHub constructs a Hub and starts its debounced public WS broadcaster.
@@ -89,6 +94,7 @@ func NewHub(st *store.Store, notifier AlertNotifier, opts ...Option) *Hub {
 			opt(h)
 		}
 	}
+	h.publicVersion.Store(1)
 
 	h.wg.Add(1)
 	go h.publicBroadcasterLoop()

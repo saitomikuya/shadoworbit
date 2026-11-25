@@ -551,3 +551,112 @@ func TestTier5_BugB4_EvictNodePurgesStateAndBroadcasts(t *testing.T) {
 		t.Fatal("expected public WS to broadcast offline status after EvictNode")
 	}
 }
+
+func TestServePublicWS_CachedPayloadInvalidatesOnStateTransitions(t *testing.T) {
+	st := openTestStore(t)
+	// Use a noticeable debounce window to verify immediate cache invalidation even before debounce fires.
+	h := hub.NewHub(st, nil, hub.WithPublicDebounce(200*time.Millisecond))
+	t.Cleanup(func() { _ = h.Close() })
+	srv := newTestServer(t, h)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	node, tok := createTestNode(t, st, "cache-node", true)
+
+	// 1. Two initial public WS dials share identical cached initial snapshot.
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/api/v1/public/ws"
+	p1, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p1.CloseNow()
+	_, frame1, err := p1.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p2, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p2.CloseNow()
+	_, frame2, err := p2.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(frame1) != string(frame2) {
+		t.Fatalf("expected identical cached initial snapshot, got:\n%s\nvs\n%s", frame1, frame2)
+	}
+
+	// 2. Store mutation + BroadcastPublicStatus immediately invalidates cache for a newly dialed WS
+	//    even before publicDebounce expires.
+	if err := st.SetSetting(ctx, "site_title", "Updated Cache Title"); err != nil {
+		t.Fatal(err)
+	}
+	h.BroadcastPublicStatus()
+
+	p3, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p3.CloseNow()
+	_, frame3, err := p3.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snap3 protocol.PublicStatusSnapshot
+	if err := json.Unmarshal(frame3, &snap3); err != nil {
+		t.Fatal(err)
+	}
+	if snap3.SiteTitle != "Updated Cache Title" {
+		t.Fatalf("expected immediate cache invalidation on BroadcastPublicStatus, got title=%q", snap3.SiteTitle)
+	}
+
+	// 3. Agent metrics update invalidates cached payload and updates node status/traffic.
+	agentConn, _, err := dialAgentWS(ctx, srv.URL, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer agentConn.CloseNow()
+	_ = readEnvelope(t, agentConn, 3*time.Second)
+
+	if err := sendAgentEnvelope(ctx, agentConn, protocol.MsgTypeAgentMetrics, "m1", protocol.AgentMetrics{
+		TS:         time.Now().Unix(),
+		NicRxDelta: 1234,
+		NicTxDelta: 5678,
+		Health:     protocol.AgentHealth{Snell: true, ShadowTLS: true, SingBox: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait until GetPublicSnapshotJSON reflects online + updated traffic.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		raw, err := h.GetPublicSnapshotJSON(ctx)
+		if err == nil {
+			var s protocol.PublicStatusSnapshot
+			if json.Unmarshal(raw, &s) == nil && len(s.Nodes) == 1 &&
+				s.Nodes[0].Status == protocol.NodeStatusOnline && s.Nodes[0].TrafficUsedBytes == 1234+5678 {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("public snapshot cache did not reflect agent.metrics transition")
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+
+	// 4. EvictNode immediately invalidates cached payload back to offline.
+	h.EvictNode(node.ID)
+	rawAfterEvict, err := h.GetPublicSnapshotJSON(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapAfterEvict protocol.PublicStatusSnapshot
+	if err := json.Unmarshal(rawAfterEvict, &snapAfterEvict); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapAfterEvict.Nodes) != 1 || snapAfterEvict.Nodes[0].Status != protocol.NodeStatusOffline {
+		t.Fatalf("expected EvictNode to invalidate cache to offline, got %+v", snapAfterEvict.Nodes)
+	}
+}

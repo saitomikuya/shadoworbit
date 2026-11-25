@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"math"
@@ -1753,6 +1754,9 @@ func TestTrafficUsageLogsMinuteAggregationAndRetention(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if _, err := s.PruneConfiguredTrafficUsageLogs(ctx); err != nil {
+		t.Fatal(err)
+	}
 	cnt, err := s.CountTrafficUsageLogs(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -1901,5 +1905,356 @@ func TestTrafficUsageLogsUserFilterAndMerge(t *testing.T) {
 	}
 	if len(allMerged) != 4 {
 		t.Fatalf("expected 4 total merged rows across nodes/users, got %d (%+v)", len(allMerged), allMerged)
+	}
+}
+
+func TestQueryTrafficUsageLogs_MergeExceeds5000Rows(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+
+	n1 := &Node{Name: "Merge5k-N1", RegionTag: "HK", TokenHash: "hash_m5k_n1", Enabled: true}
+	if err := s.CreateNode(ctx, n1); err != nil {
+		t.Fatal(err)
+	}
+	u1 := &User{
+		Username:        "m5k_u1",
+		Enabled:         true,
+		SubToken:        "sub_m5k_u1",
+		SSUPSK16:        "AAAAAAAAAAAAAAAAAAAAAA==",
+		SSUPSK32:        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		STLSPassword:    "pw",
+		BillingResetDay: 1,
+	}
+	u2 := &User{
+		Username:        "m5k_u2",
+		Enabled:         true,
+		SubToken:        "sub_m5k_u2",
+		SSUPSK16:        "AAAAAAAAAAAAAAAAAAAAAA==",
+		SSUPSK32:        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		STLSPassword:    "pw",
+		BillingResetDay: 1,
+	}
+	if err := s.CreateUser(ctx, u1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateUser(ctx, u2); err != nil {
+		t.Fatal(err)
+	}
+
+	// Insert:
+	// - u1: 1 older session (10 mins) far beyond row 5,000, AND 1 huge continuous session spanning 5,200 consecutive minutes.
+	// - u2: 600 distinct sessions (each 2 mins separated by 10m gaps) interleaving across the timeline so we test both
+	//   long session spanning >5000 rows and top-outLimit early-stop accuracy.
+	tx, err := s.DB().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stmt, err := tx.PrepareContext(ctx, `
+INSERT INTO traffic_usage_logs(node_id, user_id, log_minute, rx_bytes, tx_bytes, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var allRaw []TrafficUsageLog
+	var nextID int64
+	insertRow := func(uid int64, uname string, ts time.Time, rx, txBytes int64) {
+		minStr := ts.UTC().Format("2006-01-02T15:04:00Z")
+		res, err := stmt.ExecContext(ctx, n1.ID, uid, minStr, rx, txBytes, minStr)
+		if err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+		id, _ := res.LastInsertId()
+		nextID = id
+		_ = nextID
+		allRaw = append(allRaw, TrafficUsageLog{
+			ID:        id,
+			NodeID:    n1.ID,
+			NodeName:  n1.Name,
+			RegionTag: n1.RegionTag,
+			UserID:    uid,
+			Username:  uname,
+			LogMinute: minStr,
+			RxBytes:   rx,
+			TxBytes:   txBytes,
+			UpdatedAt: minStr,
+		})
+	}
+
+	base := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	// Older u1 session before the 5200-minute session (15-min gap before base+100m).
+	for m := 0; m < 10; m++ {
+		insertRow(u1.ID, u1.Username, base.Add(time.Duration(m)*time.Minute), 100, 50)
+	}
+	// Long continuous 5,200-minute session for u1 (starts at base+100m).
+	longStart := base.Add(100 * time.Minute)
+	for m := 0; m < 5200; m++ {
+		insertRow(u1.ID, u1.Username, longStart.Add(time.Duration(m)*time.Minute), 10, 20)
+	}
+	// 550 distinct sessions for u2 (2 minutes each, 10 minutes apart).
+	for sIdx := 0; sIdx < 550; sIdx++ {
+		st := longStart.Add(time.Duration(sIdx*10) * time.Minute)
+		insertRow(u2.ID, u2.Username, st, 300, 400)
+		insertRow(u2.ID, u2.Username, st.Add(time.Minute), 300, 400)
+	}
+	_ = stmt.Close()
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Query u1 specifically -> must see BOTH sessions (the 5200-minute session intact + the older 10-minute session beyond row 5000).
+	u1Got, err := s.QueryTrafficUsageLogs(ctx, TrafficUsageLogFilter{
+		UserID:          &u1.ID,
+		Limit:           500,
+		Merge:           true,
+		MergeGapMinutes: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(u1Got) != 2 {
+		t.Fatalf("expected 2 merged sessions for u1 across >5200 rows, got %d (%+v)", len(u1Got), u1Got)
+	}
+	if u1Got[0].RxBytes != 5200*10 || u1Got[0].TxBytes != 5200*20 ||
+		u1Got[0].StartTime != longStart.Format("2006-01-02T15:04:00Z") ||
+		u1Got[0].EndTime != longStart.Add(5199*time.Minute).Format("2006-01-02T15:04:00Z") {
+		t.Fatalf("5200-minute session truncated or mis-merged: %+v", u1Got[0])
+	}
+	if u1Got[1].RxBytes != 10*100 || u1Got[1].TxBytes != 10*50 {
+		t.Fatalf("older session beyond row 5000 lost or mis-merged: %+v", u1Got[1])
+	}
+
+	// 2. Query all users with limit=500 and compare against full-memory reference oracle mergeTrafficUsageLogs.
+	allGot, err := s.QueryTrafficUsageLogs(ctx, TrafficUsageLogFilter{
+		Limit:           500,
+		Merge:           true,
+		MergeGapMinutes: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantOracle := mergeTrafficUsageLogs(allRaw, 5, 500)
+	if len(allGot) != len(wantOracle) || len(allGot) != 500 {
+		t.Fatalf("expected 500 merged sessions matching oracle, got len=%d oracle=%d", len(allGot), len(wantOracle))
+	}
+	for i := range wantOracle {
+		if allGot[i] != wantOracle[i] {
+			t.Fatalf("mismatch at merged index %d:\n got: %+v\nwant: %+v", i, allGot[i], wantOracle[i])
+		}
+	}
+}
+
+func TestApplyAgentMetricsAt_CombinedAndRollback(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+
+	n := &Node{Name: "Combined-Node", RegionTag: "SG", TokenHash: "hash_comb", Enabled: true}
+	if err := s.CreateNode(ctx, n); err != nil {
+		t.Fatal(err)
+	}
+	u := &User{
+		Username:        "comb_user",
+		Enabled:         true,
+		SubToken:        "sub_comb",
+		SSUPSK16:        "AAAAAAAAAAAAAAAAAAAAAA==",
+		SSUPSK32:        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		STLSPassword:    "pw",
+		BillingResetDay: 1,
+	}
+	if err := s.CreateUser(ctx, u); err != nil {
+		t.Fatal(err)
+	}
+
+	ts := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	// Duplicate user entries for the same user in one slice should coalesce cleanly.
+	res, err := s.ApplyAgentMetricsAt(ctx, n.ID, 1000, 2000, []protocol.UserTrafficDelta{
+		{UserID: u.ID, UpBytes: 100, DownBytes: 200},
+		{Username: u.Username, UpBytes: 50, DownBytes: 25},
+		{UserID: 999999, UpBytes: 10, DownBytes: 10}, // deleted user skipped
+	}, 4096, &NodeTelemetryUpdate{
+		CPUPercent:      33.5,
+		MemUsedBytes:    512,
+		MemTotalBytes:   1024,
+		DiskUsedPercent: 40.0,
+		UptimeSeconds:   3600,
+		RxBPS:           111,
+		TxBPS:           222,
+		CoreAHealthy:    true,
+		CoreBHealthy:    true,
+		LastSeenAt:      ts,
+	}, ts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Node.CycleRxBytes != 1000 || res.Node.CycleTxBytes != 2000 || res.Node.CPUPercent != 33.5 || res.Node.Status != protocol.NodeStatusOnline {
+		t.Fatalf("unexpected combined node result: %+v", res.Node)
+	}
+	if len(res.UpdatedUserIDs) != 1 || res.UpdatedUserIDs[0] != u.ID || len(res.SkippedUserIDs) != 1 || res.SkippedUserIDs[0] != 999999 {
+		t.Fatalf("unexpected user IDs: updated=%v skipped=%v", res.UpdatedUserIDs, res.SkippedUserIDs)
+	}
+	gotUser, err := s.GetUserByID(ctx, u.ID)
+	if err != nil || gotUser.UsedUpBytes != 150 || gotUser.UsedDownBytes != 225 {
+		t.Fatalf("expected coalesced user traffic up=150 down=225, got %+v err=%v", gotUser, err)
+	}
+	adminTotal, _, err := s.ListAdminNodeTraffic(ctx)
+	if err != nil || adminTotal != 4096 {
+		t.Fatalf("expected admin Snell traffic=4096, got %d err=%v", adminTotal, err)
+	}
+}
+
+func TestStoreCloseFastUnderWALReadLockAndCanceledQuery(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "close_fast.db")
+	s, err := Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer func() {
+		_ = s.Close()
+	}()
+
+	n := &Node{Name: "CloseFastNode", TokenHash: "hash_close_fast", Enabled: true}
+	if err := s.CreateNode(ctx, n); err != nil {
+		t.Fatalf("CreateNode failed: %v", err)
+	}
+
+	// Open a second SQLite reader holding a WAL read snapshot so PRAGMA wal_checkpoint(TRUNCATE)
+	// hits _walBusyLock; Store.Close() must not sleep for busy_timeout (5000ms).
+	readerDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open reader failed: %v", err)
+	}
+	defer readerDB.Close()
+
+	tx, err := readerDB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatalf("reader BeginTx failed: %v", err)
+	}
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM nodes`).Scan(&count); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("reader query failed: %v", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	// Write another WAL frame after the reader snapshot started so checkpoint(TRUNCATE) is blocked.
+	if err := s.SetSetting(ctx, "wal_frame_after_snapshot", "1"); err != nil {
+		t.Fatalf("SetSetting failed: %v", err)
+	}
+
+	// Also exercise a canceled query immediately prior to Close().
+	canceledCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	_, _ = s.GetNodeByID(canceledCtx, n.ID)
+
+	start := time.Now()
+	if err := s.Close(); err != nil {
+		t.Fatalf("Store.Close() failed: %v", err)
+	}
+	elapsed := time.Since(start)
+	if elapsed >= 500*time.Millisecond {
+		t.Fatalf("Store.Close() blocked too long under WAL read lock: %s (want < 500ms)", elapsed)
+	}
+}
+
+func TestUpdateNodeTx_ConcurrentAtomicMerge(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+
+	n := &Node{
+		Name:      "AtomicNode",
+		TokenHash: "hash_atomic_tx",
+		Enabled:   true,
+		SnellConfig: protocol.SnellConfig{
+			Enabled:    true,
+			Version:    protocol.SnellVersionV5,
+			PublicPort: 20001,
+			InnerPort:  31001,
+			PSK:        "psk-atomic",
+			TFO:        true,
+			STLSSNI:    "init-snell.example.com",
+		},
+		SSConfig: protocol.SSConfig{
+			Enabled: true,
+			TCPPort: 20002,
+			UDPPort: 20002,
+			Cipher:  protocol.CipherAES128GCM,
+			IPSK:    "AAAAAAAAAAAAAAAAAAAAAA==",
+			TFO:     true,
+			STLSSNI: "init-ss.example.com",
+		},
+		ConfigRevision: 1,
+	}
+	if err := s.CreateNode(ctx, n); err != nil {
+		t.Fatalf("CreateNode failed: %v", err)
+	}
+
+	const rounds = 25
+	seenRevs := make(map[int64]struct{}, rounds*2)
+	for r := 0; r < rounds; r++ {
+		wantSnell := fmt.Sprintf("snell-%02d.example.com", r)
+		wantSS := fmt.Sprintf("ss-%02d.example.com", r)
+
+		barrier := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		var err1, err2 error
+		var c1, c2 *Node
+
+		go func() {
+			defer wg.Done()
+			<-barrier
+			c1, err1 = s.UpdateNodeTx(ctx, n.ID, func(existing *Node) (*Node, error) {
+				upd := *existing
+				upd.SnellConfig.STLSSNI = wantSnell
+				upd.ConfigRevision = existing.ConfigRevision + 1
+				return &upd, nil
+			})
+		}()
+
+		go func() {
+			defer wg.Done()
+			<-barrier
+			c2, err2 = s.UpdateNodeTx(ctx, n.ID, func(existing *Node) (*Node, error) {
+				upd := *existing
+				upd.SSConfig.STLSSNI = wantSS
+				upd.ConfigRevision = existing.ConfigRevision + 1
+				return &upd, nil
+			})
+		}()
+
+		close(barrier)
+		wg.Wait()
+
+		if err1 != nil || err2 != nil {
+			t.Fatalf("round %d UpdateNodeTx failed: err1=%v err2=%v", r, err1, err2)
+		}
+		if c1.ConfigRevision == c2.ConfigRevision {
+			t.Fatalf("round %d duplicate ConfigRevision: %d", r, c1.ConfigRevision)
+		}
+		if _, dup := seenRevs[c1.ConfigRevision]; dup {
+			t.Fatalf("round %d c1 reused ConfigRevision %d", r, c1.ConfigRevision)
+		}
+		if _, dup := seenRevs[c2.ConfigRevision]; dup {
+			t.Fatalf("round %d c2 reused ConfigRevision %d", r, c2.ConfigRevision)
+		}
+		seenRevs[c1.ConfigRevision] = struct{}{}
+		seenRevs[c2.ConfigRevision] = struct{}{}
+
+		got, err := s.GetNodeByID(ctx, n.ID)
+		if err != nil {
+			t.Fatalf("round %d GetNodeByID failed: %v", r, err)
+		}
+		if got.SnellConfig.STLSSNI != wantSnell || got.SSConfig.STLSSNI != wantSS {
+			t.Fatalf("round %d lost update: got snell=%q (want %q), ss=%q (want %q)",
+				r, got.SnellConfig.STLSSNI, wantSnell, got.SSConfig.STLSSNI, wantSS)
+		}
+		if !got.SnellConfig.TFO || !got.SSConfig.TFO {
+			t.Fatalf("round %d lost TFO flags: snell=%v ss=%v", r, got.SnellConfig.TFO, got.SSConfig.TFO)
+		}
 	}
 }

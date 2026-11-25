@@ -39,8 +39,8 @@ func f15_assertExactPublicSchema(t *testing.T, raw []byte) {
 	wantNode := []string{
 		"id", "name", "region_tag", "sort_order", "status", "paused_reason",
 		"billing_reset_day", "cpu_percent", "mem_used_bytes", "mem_total_bytes",
-		"uptime_seconds", "rx_bps", "tx_bps", "traffic_used_bytes",
-		"traffic_limit_bytes", "traffic_percent", "percentage_only",
+		"uptime_seconds", "rx_bps", "tx_bps", "total_rx_bytes", "total_tx_bytes",
+		"traffic_used_bytes", "traffic_limit_bytes", "traffic_percent", "percentage_only",
 		"core_a_healthy", "core_b_healthy",
 	}
 	for i, elem := range nodesAny {

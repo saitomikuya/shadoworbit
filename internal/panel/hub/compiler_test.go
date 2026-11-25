@@ -359,3 +359,97 @@ func TestCommandDispatch(t *testing.T) {
 		t.Fatalf("expected ErrHubClosed, got %v", err)
 	}
 }
+
+func TestSyncAll_UsesLatestSettingsAndCachesAcrossNodes(t *testing.T) {
+	st := openTestStore(t)
+	h := hub.NewHub(st, nil, hub.WithPublicDebounce(10*time.Millisecond))
+	t.Cleanup(func() { _ = h.Close() })
+	srv := newTestServer(t, h)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	grp := &store.DNSRuleGroup{
+		Name:  "shared-group",
+		Rules: []string{"netflix.com", "openai.com"},
+	}
+	if err := st.CreateDNSRuleGroup(ctx, grp); err != nil {
+		t.Fatal(err)
+	}
+
+	n1, tok1 := createTestNode(t, st, "syncall-1", true)
+	n2, tok2 := createTestNode(t, st, "syncall-2", true)
+	nOff, _ := createTestNode(t, st, "syncall-offline", true)
+	for _, nid := range []int64{n1.ID, n2.ID, nOff.ID} {
+		dbN, err := st.GetNodeByID(ctx, nid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dbN.DNSUnlockEnabled = true
+		dbN.DNSRuleGroupID = &grp.ID
+		if err := st.UpdateNode(ctx, dbN); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	c1, _, err := dialAgentWS(ctx, srv.URL, tok1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c1.CloseNow()
+	c2, _, err := dialAgentWS(ctx, srv.URL, tok2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c2.CloseNow()
+	_ = readEnvelope(t, c1, 3*time.Second)
+	_ = readEnvelope(t, c2, 3*time.Second)
+
+	if err := st.SetSetting(ctx, "default_upstream_dns", "9.9.9.9:53"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSetting(ctx, "default_local_dns_port", "15454"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := h.SyncAll(ctx); err != nil {
+		t.Fatalf("first SyncAll: %v", err)
+	}
+	for idx, conn := range []*struct {
+		read func() protocol.Envelope
+	}{
+		{read: func() protocol.Envelope { return readEnvelope(t, c1, 3*time.Second) }},
+		{read: func() protocol.Envelope { return readEnvelope(t, c2, 3*time.Second) }},
+	} {
+		env := conn.read()
+		var cfg protocol.ServerConfigSync
+		if err := env.DecodePayload(&cfg); err != nil {
+			t.Fatal(err)
+		}
+		if cfg.DNS.UpstreamDNS != "9.9.9.9:53" || cfg.DNS.LocalPort != 15454 || len(cfg.DNS.Rules) != 2 {
+			t.Fatalf("node %d got stale/unexpected DNS config: %+v", idx+1, cfg.DNS)
+		}
+	}
+
+	// Update settings again and verify second SyncAll never serves stale cache from first SyncAll.
+	if err := st.SetSetting(ctx, "default_upstream_dns", "8.8.4.4:5353"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSetting(ctx, "default_local_dns_port", "15555"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.SyncAll(ctx); err != nil {
+		t.Fatalf("second SyncAll: %v", err)
+	}
+	for idx, fn := range []func() protocol.Envelope{
+		func() protocol.Envelope { return readEnvelope(t, c1, 3*time.Second) },
+		func() protocol.Envelope { return readEnvelope(t, c2, 3*time.Second) },
+	} {
+		var cfg protocol.ServerConfigSync
+		if err := fn().DecodePayload(&cfg); err != nil {
+			t.Fatal(err)
+		}
+		if cfg.DNS.UpstreamDNS != "8.8.4.4:5353" || cfg.DNS.LocalPort != 15555 {
+			t.Fatalf("node %d got stale cached DNS config on 2nd SyncAll: %+v", idx+1, cfg.DNS)
+		}
+	}
+}

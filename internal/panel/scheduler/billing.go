@@ -133,6 +133,9 @@ func (s *Scheduler) runNodeBillingResets(
 			return err
 		}
 		s.setNodeWarned(node.ID, false)
+		if s.hub != nil {
+			s.hub.BroadcastPublicStatus()
+		}
 
 		if wasPaused {
 			if _, err := s.store.IncrementNodeConfigRevision(ctx, node.ID); err != nil && !errors.Is(err, store.ErrNotFound) {

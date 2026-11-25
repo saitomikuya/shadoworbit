@@ -158,8 +158,21 @@ func parseUserTrafficStat(name string) (username string, isUplink bool, ok bool)
 }
 
 func (c *Collector) pollStats(ctx context.Context) error {
+	aggregated, activeSnapshot, err := c.fetchUserDeltas(ctx)
+	if err != nil {
+		return err
+	}
+	if len(aggregated) > 0 {
+		if err := c.addUserDeltas(aggregated, activeSnapshot); err != nil {
+			return fmt.Errorf("persist user deltas: %w", err)
+		}
+	}
+	return nil
+}
+
+func (c *Collector) fetchUserDeltas(ctx context.Context) (map[string]walUserDelta, map[string]int64, error) {
 	if c.opts.StatsAddr == "" {
-		return nil
+		return nil, nil, nil
 	}
 
 	c.userMu.RLock()
@@ -171,7 +184,7 @@ func (c *Collector) pollStats(ctx context.Context) error {
 	c.userMu.RUnlock()
 
 	if !enabled {
-		return nil
+		return nil, nil, nil
 	}
 
 	reqBytes := encodeQueryStatsRequest(statsUserPattern, true)
@@ -188,16 +201,16 @@ func (c *Collector) pollStats(ctx context.Context) error {
 	conn, err := c.ensureGRPCConnLocked()
 	c.statsMu.Unlock()
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	err = conn.Invoke(rpcCtx, statsQueryMethod, reqBytes, &respBytes, grpc.ForceCodec(rawProtoCodec{}))
 	if err != nil {
-		return fmt.Errorf("grpc QueryStats %q: %w", c.opts.StatsAddr, err)
+		return nil, nil, fmt.Errorf("grpc QueryStats %q: %w", c.opts.StatsAddr, err)
 	}
 
 	stats, err := decodeQueryStatsResponse(respBytes)
 	if err != nil {
-		return fmt.Errorf("decode QueryStatsResponse: %w", err)
+		return nil, nil, fmt.Errorf("decode QueryStatsResponse: %w", err)
 	}
 
 	aggregated := make(map[string]walUserDelta)
@@ -225,13 +238,7 @@ func (c *Collector) pollStats(ctx context.Context) error {
 		}
 		aggregated[username] = entry
 	}
-
-	if len(aggregated) > 0 {
-		if err := c.addUserDeltas(aggregated, activeSnapshot); err != nil {
-			return fmt.Errorf("persist user deltas: %w", err)
-		}
-	}
-	return nil
+	return aggregated, activeSnapshot, nil
 }
 
 func (c *Collector) ensureGRPCConnLocked() (*grpc.ClientConn, error) {

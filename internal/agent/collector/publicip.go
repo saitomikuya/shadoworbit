@@ -26,7 +26,7 @@ var (
 )
 
 const (
-	publicIPFamilyTimeout   = 3 * time.Second
+	publicIPFamilyTimeout   = 1500 * time.Millisecond
 	publicIPEndpointTimeout = 1500 * time.Millisecond
 )
 
@@ -62,27 +62,60 @@ func (c *Collector) DetectPublicIPs(ctx context.Context) (ipv4 string, ipv6 stri
 }
 
 func (c *Collector) detectFamilyPublicIP(ctx context.Context, endpoints []string, wantV6 bool) string {
+	clean := make([]string, 0, len(endpoints))
+	for _, ep := range endpoints {
+		if ep = strings.TrimSpace(ep); ep != "" {
+			clean = append(clean, ep)
+		}
+	}
+	if len(clean) == 0 {
+		return ""
+	}
+
 	familyCtx, cancel := context.WithTimeout(ctx, publicIPFamilyTimeout)
 	defer cancel()
 
 	client, cleanup := c.publicIPClient(wantV6)
-	if cleanup != nil {
-		defer cleanup()
+
+	resCh := make(chan string, 1)
+	var wg sync.WaitGroup
+	for _, ep := range clean {
+		ep := ep
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if ip := querySinglePublicIP(familyCtx, client, ep, wantV6); ip != "" {
+				select {
+				case resCh <- ip:
+				default:
+				}
+				cancel()
+			}
+		}()
 	}
 
-	for _, ep := range endpoints {
-		if familyCtx.Err() != nil {
+	doneCh := make(chan struct{})
+	go func() {
+		wg.Wait()
+		if cleanup != nil {
+			cleanup()
+		}
+		close(doneCh)
+	}()
+
+	select {
+	case ip := <-resCh:
+		cancel()
+		<-doneCh
+		return ip
+	case <-doneCh:
+		select {
+		case ip := <-resCh:
+			return ip
+		default:
 			return ""
 		}
-		ep = strings.TrimSpace(ep)
-		if ep == "" {
-			continue
-		}
-		if ip := querySinglePublicIP(familyCtx, client, ep, wantV6); ip != "" {
-			return ip
-		}
 	}
-	return ""
 }
 
 func (c *Collector) publicIPClient(wantV6 bool) (*http.Client, func()) {

@@ -237,13 +237,17 @@ export function UsersPage() {
         });
         toast.success(`已创建用户 "${username.trim()}"`);
       } else {
+        const hiddenDisabledIds = (editingUser.node_ids || []).filter(
+          (id) => !ssEnabledNodeIdSet.has(id)
+        );
+        const mergedNodeIds = Array.from(new Set([...filteredNodeIds, ...hiddenDisabledIds]));
         await api.updateUser(editingUser.id, {
           username: username.trim(),
           enabled,
           traffic_quota_bytes: quotaBytes,
           billing_reset_day: resetDay,
           expire_at: expireAt,
-          node_ids: filteredNodeIds,
+          node_ids: mergedNodeIds,
         });
         toast.success(`已更新用户 "${username.trim()}"`);
       }
@@ -283,7 +287,11 @@ export function UsersPage() {
     setMatrixSaving(true);
     try {
       const filteredNodeIds = matrixNodeIds.filter((id) => ssEnabledNodeIdSet.has(id));
-      await api.setUserNodes(matrixUser.id, filteredNodeIds);
+      const hiddenDisabledIds = (matrixUser.node_ids || []).filter(
+        (id) => !ssEnabledNodeIdSet.has(id)
+      );
+      const mergedNodeIds = Array.from(new Set([...filteredNodeIds, ...hiddenDisabledIds]));
+      await api.setUserNodes(matrixUser.id, mergedNodeIds);
       toast.success(`已更新 "${matrixUser.username}" 的可用节点权限`);
       setMatrixUser(null);
       await load();

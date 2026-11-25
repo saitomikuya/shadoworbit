@@ -172,6 +172,17 @@ func (c *configCoordinator) Apply(ctx context.Context, nextCfg protocol.ServerCo
 			return nil
 		}
 	}
+	if nextCfg.ConfigRevision <= 0 {
+		err := fmt.Errorf("invalid config_revision %d: must be > 0", nextCfg.ConfigRevision)
+		c.emit(protocol.AgentEvent{
+			Event:          protocol.EventConfigError,
+			ConfigRevision: nextCfg.ConfigRevision,
+			Status:         protocol.EventStatusFailed,
+			Message:        "invalid config_revision",
+			Detail:         err.Error(),
+		})
+		return err
+	}
 
 	effectiveDNS := cloneProtocolDNS(nextCfg.DNS)
 	if effectiveDNS.LocalPort == 0 && c.configuredDNSPort > 0 {

@@ -452,21 +452,19 @@ func TestTier4_Scenario03_StreamingDNSUnlockDualChannelAndNodata(t *testing.T) {
 
 	snellConfPath := filepath.Join(ag.DataDir, "configs", "snell-server.conf")
 	sbConfPath := filepath.Join(ag.DataDir, "configs", "sing-box.json")
-	reDNS := regexp.MustCompile(`dns\s*=\s*127\.0\.0\.1:(\d+)`)
-	var dnsPort string
+	dnsPort := fmt.Sprintf("%d", localDNSPort)
 	t4_waitUntil(t, 12*time.Second, "both snell and sing-box configured with shared local DNS port", func() bool {
 		b1, err1 := os.ReadFile(snellConfPath)
 		b2, err2 := os.ReadFile(sbConfPath)
 		if err1 != nil || err2 != nil {
 			return false
 		}
-		m := reDNS.FindStringSubmatch(string(b1))
-		if len(m) != 2 {
+		if localDNSPort != 53 && strings.Contains(string(b1), "dns = 127.0.0.1:"+dnsPort) {
 			return false
 		}
-		dnsPort = m[1]
-		return strings.Contains(string(b2), "127.0.0.1:"+dnsPort) ||
-			(strings.Contains(string(b2), `"127.0.0.1"`) && strings.Contains(string(b2), `"server_port": `+dnsPort))
+		return strings.Contains(string(b1), "dns-ip-preference = prefer-ipv4") &&
+			(strings.Contains(string(b2), "127.0.0.1:"+dnsPort) ||
+				(strings.Contains(string(b2), `"127.0.0.1"`) && strings.Contains(string(b2), `"server_port": `+dnsPort)))
 	})
 	dnsAddr := "127.0.0.1:" + dnsPort
 

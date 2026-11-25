@@ -2264,3 +2264,415 @@ func TestDefaultTFOAndAutoGrantNewSSNodeToExistingUsers(t *testing.T) {
 		t.Fatalf("expected SS-disabled node %d NOT to be auto-granted to existing user, got %+v", n2.ID, listedUsers)
 	}
 }
+
+func TestNodePartialUpdateValidationAndGrantContract(t *testing.T) {
+	env := newTestEnv(t, nil, "")
+
+	// Create user first.
+	st, _, rawUser := env.do(http.MethodPost, "/api/v1/admin/users", env.jwt, map[string]any{
+		"username": "partial-put-user",
+		"enabled":  true,
+	})
+	if st != http.StatusCreated {
+		t.Fatalf("create user failed: %d %s", st, string(rawUser))
+	}
+	var usr struct {
+		ID int64 `json:"id"`
+	}
+	_ = json.Unmarshal(rawUser, &usr)
+
+	// 1. Create node with both Snell and SS enabled (TFO defaults to true).
+	ipsk, _ := auth.GenerateIPSKForCipher(protocol.CipherAES128GCM)
+	st, _, rawNode := env.do(http.MethodPost, "/api/v1/admin/nodes", env.jwt, map[string]any{
+		"name":      "PartialNode",
+		"public_ip": "198.51.100.77",
+		"snell_config": map[string]any{
+			"enabled":           true,
+			"version":           "v5",
+			"public_port":       20001,
+			"inner_port":        31001,
+			"psk":               "snell-valid-psk",
+			"dns_ip_preference": "prefer-ipv4",
+			"stls_password":     "stls-pass",
+			"stls_sni":          "gateway.icloud.com",
+		},
+		"ss_config": map[string]any{
+			"enabled":  true,
+			"tcp_port": 20002,
+			"udp_port": 20001, // UDP == Snell.PublicPort is allowed
+			"cipher":   protocol.CipherAES128GCM,
+			"ipsk":     ipsk,
+			"stls_sni": "swscan.apple.com",
+		},
+	})
+	if st != http.StatusCreated {
+		t.Fatalf("create node failed: %d %s", st, string(rawNode))
+	}
+	var created struct {
+		ID          int64                `json:"id"`
+		SnellConfig protocol.SnellConfig `json:"snell_config"`
+		SSConfig    protocol.SSConfig    `json:"ss_config"`
+	}
+	_ = json.Unmarshal(rawNode, &created)
+	if !created.SnellConfig.TFO || !created.SSConfig.TFO {
+		t.Fatalf("expected default TFO=true, got snell=%v ss=%v", created.SnellConfig.TFO, created.SSConfig.TFO)
+	}
+
+	// 2. Partial PUT updating only snell_config.stls_sni and ss_config.stls_sni must NOT zero TFO, Enabled, ports, or keys.
+	st, _, rawUpdated := env.do(http.MethodPut, fmt.Sprintf("/api/v1/admin/nodes/%d", created.ID), env.jwt, map[string]any{
+		"snell_config": map[string]any{
+			"stls_sni": "itunes.apple.com:443",
+		},
+		"ss_config": map[string]any{
+			"stls_sni": "amp-api.podcasts.apple.com",
+		},
+	})
+	if st != http.StatusOK {
+		t.Fatalf("partial PUT failed: %d %s", st, string(rawUpdated))
+	}
+	var updated struct {
+		SnellConfig protocol.SnellConfig `json:"snell_config"`
+		SSConfig    protocol.SSConfig    `json:"ss_config"`
+	}
+	_ = json.Unmarshal(rawUpdated, &updated)
+	if !updated.SnellConfig.Enabled || !updated.SnellConfig.TFO || updated.SnellConfig.PublicPort != 20001 ||
+		updated.SnellConfig.PSK != "snell-valid-psk" || updated.SnellConfig.STLSSNI != "itunes.apple.com:443" {
+		t.Fatalf("partial PUT mutated/zeroed omitted snell_config fields: %+v", updated.SnellConfig)
+	}
+	if !updated.SSConfig.Enabled || !updated.SSConfig.TFO || updated.SSConfig.TCPPort != 20002 ||
+		updated.SSConfig.IPSK != ipsk || updated.SSConfig.STLSSNI != "amp-api.podcasts.apple.com" {
+		t.Fatalf("partial PUT mutated/zeroed omitted ss_config fields: %+v", updated.SSConfig)
+	}
+
+	// 3. Revoke user's access, toggle SS off -> on via PUT; PUT must NOT re-grant revoked user.
+	st, _, _ = env.do(http.MethodPut, fmt.Sprintf("/api/v1/admin/users/%d/nodes", usr.ID), env.jwt, map[string]any{
+		"node_ids": []int64{},
+	})
+	if st != http.StatusOK {
+		t.Fatalf("revoke user nodes failed: %d", st)
+	}
+	st, _, _ = env.do(http.MethodPut, fmt.Sprintf("/api/v1/admin/nodes/%d", created.ID), env.jwt, map[string]any{
+		"ss_config": map[string]any{"enabled": false},
+	})
+	if st != http.StatusOK {
+		t.Fatalf("toggle SS off failed: %d", st)
+	}
+	st, _, _ = env.do(http.MethodPut, fmt.Sprintf("/api/v1/admin/nodes/%d", created.ID), env.jwt, map[string]any{
+		"ss_config": map[string]any{"enabled": true},
+	})
+	if st != http.StatusOK {
+		t.Fatalf("toggle SS on failed: %d", st)
+	}
+	st, _, rawUserGet := env.do(http.MethodGet, fmt.Sprintf("/api/v1/admin/users/%d", usr.ID), env.jwt, nil)
+	if st != http.StatusOK {
+		t.Fatalf("get user failed: %d", st)
+	}
+	var gotUser struct {
+		NodeIDs []int64 `json:"node_ids"`
+	}
+	_ = json.Unmarshal(rawUserGet, &gotUser)
+	if len(gotUser.NodeIDs) != 0 {
+		t.Fatalf("PUT SS off->on should not re-grant revoked user, got node_ids=%v", gotUser.NodeIDs)
+	}
+
+	// 4. Validation rejections (non-empty bad fields and TCP port collisions).
+	badUpdates := []struct {
+		name string
+		body map[string]any
+	}{
+		{"bad_dns_ip_pref", map[string]any{"snell_config": map[string]any{"dns_ip_preference": "ipv6-only"}}},
+		{"psk_with_space", map[string]any{"snell_config": map[string]any{"psk": "bad psk"}}},
+		{"psk_with_semicolon", map[string]any{"snell_config": map[string]any{"psk": "bad;psk"}}},
+		{"stls_pwd_control_char", map[string]any{"snell_config": map[string]any{"stls_password": "bad\npass"}}},
+		{"bad_snell_sni", map[string]any{"snell_config": map[string]any{"stls_sni": "[not.an.ip]:443"}}},
+		{"bad_ss_sni", map[string]any{"ss_config": map[string]any{"stls_sni": "bad sni"}}},
+		{"ss_sni_trailing_lf", map[string]any{"ss_config": map[string]any{"stls_sni": "example.com\n"}}},
+		{"ss_sni_leading_lf", map[string]any{"ss_config": map[string]any{"stls_sni": "\nexample.com"}}},
+		{"ss_sni_crlf", map[string]any{"ss_config": map[string]any{"stls_sni": "example.com\r\n"}}},
+		{"ss_sni_tab", map[string]any{"ss_config": map[string]any{"stls_sni": "example.com\t"}}},
+		{"ss_sni_nbsp", map[string]any{"ss_config": map[string]any{"stls_sni": "example.com\u00a0foo"}}},
+		{"ss_sni_comma_eq", map[string]any{"ss_config": map[string]any{"stls_sni": "example.com,tfo=false"}}},
+		{"ss_sni_slash", map[string]any{"ss_config": map[string]any{"stls_sni": "example.com/path"}}},
+		{"snell_sni_trailing_lf", map[string]any{"snell_config": map[string]any{"stls_sni": "example.com\n"}}},
+		{"snell_sni_leading_space", map[string]any{"snell_config": map[string]any{"stls_sni": " example.com"}}},
+		{"snell_sni_sub_delims", map[string]any{"snell_config": map[string]any{"stls_sni": "example.com;foo#bar?baz@qux\\z"}}},
+		{"snell_public_eq_inner", map[string]any{"snell_config": map[string]any{"inner_port": 20001}}},
+		{"ss_tcp_eq_snell_public", map[string]any{"ss_config": map[string]any{"tcp_port": 20001}}},
+		{"ss_tcp_eq_snell_inner", map[string]any{"ss_config": map[string]any{"tcp_port": 31001}}},
+	}
+	for _, tc := range badUpdates {
+		st, _, rawErr := env.do(http.MethodPut, fmt.Sprintf("/api/v1/admin/nodes/%d", created.ID), env.jwt, tc.body)
+		if st != http.StatusBadRequest {
+			t.Fatalf("%s: expected 400 Bad Request, got %d (%s)", tc.name, st, string(rawErr))
+		}
+	}
+
+	// POST creation also rejects untrimmed/control/delimiter stls_sni values.
+	for _, badSNI := range []string{"example.com\n", "\nexample.com", "example.com,tfo=false", "example.com/path"} {
+		st, _, rawErr := env.do(http.MethodPost, "/api/v1/admin/nodes", env.jwt, map[string]any{
+			"name":      "BadSNICreate",
+			"public_ip": "198.51.100.78",
+			"ss_config": map[string]any{
+				"enabled":  true,
+				"tcp_port": 20012,
+				"udp_port": 20012,
+				"cipher":   protocol.CipherAES128GCM,
+				"ipsk":     ipsk,
+				"stls_sni": badSNI,
+			},
+		})
+		if st != http.StatusBadRequest {
+			t.Fatalf("POST stls_sni=%q: expected 400 Bad Request, got %d (%s)", badSNI, st, string(rawErr))
+		}
+	}
+
+	// Valid SNIs (domain, domain:port, bracketed IPv6, bracketed IPv6:port) succeed on PUT.
+	for _, validSNI := range []string{"example.com", "example.com:8443", "[::1]", "[2001:db8::1]:8443"} {
+		st, _, rawOK := env.do(http.MethodPut, fmt.Sprintf("/api/v1/admin/nodes/%d", created.ID), env.jwt, map[string]any{
+			"snell_config": map[string]any{"stls_sni": validSNI},
+			"ss_config":    map[string]any{"stls_sni": validSNI},
+		})
+		if st != http.StatusOK {
+			t.Fatalf("valid stls_sni=%q: expected 200 OK, got %d (%s)", validSNI, st, string(rawOK))
+		}
+		var okNode struct {
+			SnellConfig protocol.SnellConfig `json:"snell_config"`
+			SSConfig    protocol.SSConfig    `json:"ss_config"`
+		}
+		_ = json.Unmarshal(rawOK, &okNode)
+		if okNode.SnellConfig.STLSSNI != validSNI || okNode.SSConfig.STLSSNI != validSNI {
+			t.Fatalf("valid stls_sni=%q not preserved: snell=%q ss=%q", validSNI, okNode.SnellConfig.STLSSNI, okNode.SSConfig.STLSSNI)
+		}
+	}
+}
+
+func TestConcurrentSameNodeDisjointPartialPuts(t *testing.T) {
+	env := newTestEnv(t, nil, "")
+
+	ipsk, err := auth.GenerateIPSKForCipher(protocol.CipherAES128GCM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, _, rawNode := env.do(http.MethodPost, "/api/v1/admin/nodes", env.jwt, map[string]any{
+		"name":      "ConcurrentPartialNode",
+		"public_ip": "198.51.100.88",
+		"snell_config": map[string]any{
+			"enabled":     true,
+			"version":     "v5",
+			"public_port": 21001,
+			"inner_port":  32001,
+			"psk":         "concurrent-psk",
+			"tfo":         true,
+			"stls_sni":    "init-snell.example.com",
+		},
+		"ss_config": map[string]any{
+			"enabled":  true,
+			"tcp_port": 21002,
+			"udp_port": 21002,
+			"cipher":   protocol.CipherAES128GCM,
+			"ipsk":     ipsk,
+			"tfo":      false,
+			"stls_sni": "init-ss.example.com",
+		},
+	})
+	if st != http.StatusCreated {
+		t.Fatalf("create node failed: %d %s", st, string(rawNode))
+	}
+	var created struct {
+		ID             int64  `json:"id"`
+		NodeToken      string `json:"node_token"`
+		ConfigRevision int64  `json:"config_revision"`
+	}
+	if err := json.Unmarshal(rawNode, &created); err != nil {
+		t.Fatal(err)
+	}
+
+	conn := env.dialAgent(created.NodeToken)
+	initEnv := readEnv(t, conn)
+	if initEnv.Type != protocol.MsgTypeServerConfigSync {
+		t.Fatalf("expected initial server.config_sync, got %s", initEnv.Type)
+	}
+
+	type putResult struct {
+		status int
+		body   []byte
+		rev    int64
+	}
+
+	prevRev := created.ConfigRevision
+	seenRevs := map[int64]struct{}{prevRev: {}}
+	const rounds = 25
+
+	for r := 0; r < rounds; r++ {
+		wantSnell := fmt.Sprintf("snell-r%02d.example.com", r)
+		wantSS := fmt.Sprintf("ss-r%02d.example.com", r)
+
+		barrier := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		var res1, res2 putResult
+		go func() {
+			defer wg.Done()
+			<-barrier
+			st, _, raw := env.do(http.MethodPut, fmt.Sprintf("/api/v1/admin/nodes/%d", created.ID), env.jwt, map[string]any{
+				"snell_config": map[string]any{"stls_sni": wantSnell},
+			})
+			var dto struct {
+				ConfigRevision int64 `json:"config_revision"`
+			}
+			_ = json.Unmarshal(raw, &dto)
+			res1 = putResult{status: st, body: raw, rev: dto.ConfigRevision}
+		}()
+
+		go func() {
+			defer wg.Done()
+			<-barrier
+			st, _, raw := env.do(http.MethodPut, fmt.Sprintf("/api/v1/admin/nodes/%d", created.ID), env.jwt, map[string]any{
+				"ss_config": map[string]any{"stls_sni": wantSS},
+			})
+			var dto struct {
+				ConfigRevision int64 `json:"config_revision"`
+			}
+			_ = json.Unmarshal(raw, &dto)
+			res2 = putResult{status: st, body: raw, rev: dto.ConfigRevision}
+		}()
+
+		close(barrier)
+		wg.Wait()
+
+		if res1.status != http.StatusOK || res2.status != http.StatusOK {
+			t.Fatalf("round %d PUT status mismatch: r1=%d (%s), r2=%d (%s)", r, res1.status, string(res1.body), res2.status, string(res2.body))
+		}
+		if res1.rev == res2.rev {
+			t.Fatalf("round %d duplicate ConfigRevision in responses: %d", r, res1.rev)
+		}
+		if _, dup := seenRevs[res1.rev]; dup {
+			t.Fatalf("round %d res1 reused ConfigRevision %d", r, res1.rev)
+		}
+		if _, dup := seenRevs[res2.rev]; dup {
+			t.Fatalf("round %d res2 reused ConfigRevision %d", r, res2.rev)
+		}
+		seenRevs[res1.rev] = struct{}{}
+		seenRevs[res2.rev] = struct{}{}
+
+		expectedMin, expectedMax := prevRev+1, prevRev+2
+		gotMin, gotMax := min(res1.rev, res2.rev), max(res1.rev, res2.rev)
+		if gotMin != expectedMin || gotMax != expectedMax {
+			t.Fatalf("round %d expected revisions {%d, %d}, got {%d, %d}", r, expectedMin, expectedMax, gotMin, gotMax)
+		}
+		prevRev = expectedMax
+
+		stGet, _, rawGet := env.do(http.MethodGet, fmt.Sprintf("/api/v1/admin/nodes/%d", created.ID), env.jwt, nil)
+		if stGet != http.StatusOK {
+			t.Fatalf("round %d GET node failed: %d %s", r, stGet, string(rawGet))
+		}
+		var got struct {
+			ConfigRevision int64                `json:"config_revision"`
+			SnellConfig    protocol.SnellConfig `json:"snell_config"`
+			SSConfig       protocol.SSConfig    `json:"ss_config"`
+		}
+		if err := json.Unmarshal(rawGet, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.SnellConfig.STLSSNI != wantSnell || got.SSConfig.STLSSNI != wantSS {
+			t.Fatalf("round %d lost partial update: snell.stls_sni=%q (want %q), ss.stls_sni=%q (want %q)",
+				r, got.SnellConfig.STLSSNI, wantSnell, got.SSConfig.STLSSNI, wantSS)
+		}
+		if !got.SnellConfig.TFO || got.SSConfig.TFO || !got.SnellConfig.Enabled || !got.SSConfig.Enabled || got.SnellConfig.PSK != "concurrent-psk" {
+			t.Fatalf("round %d clobbered omitted fields: snell=%+v ss=%+v", r, got.SnellConfig, got.SSConfig)
+		}
+		if got.ConfigRevision != prevRev {
+			t.Fatalf("round %d expected ConfigRevision=%d, got %d", r, prevRev, got.ConfigRevision)
+		}
+	}
+
+	// Concurrent partial PUT + POST .../sync must also never collide or clobber ConfigRevision.
+	const syncRounds = 10
+	for r := 0; r < syncRounds; r++ {
+		wantSnell := fmt.Sprintf("snell-sync-%02d.example.com", r)
+		barrier := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		var putRev, syncRev int64
+		var putStatus, syncStatus int
+
+		go func() {
+			defer wg.Done()
+			<-barrier
+			st, _, raw := env.do(http.MethodPut, fmt.Sprintf("/api/v1/admin/nodes/%d", created.ID), env.jwt, map[string]any{
+				"snell_config": map[string]any{"stls_sni": wantSnell},
+			})
+			putStatus = st
+			var dto struct {
+				ConfigRevision int64 `json:"config_revision"`
+			}
+			_ = json.Unmarshal(raw, &dto)
+			putRev = dto.ConfigRevision
+		}()
+
+		go func() {
+			defer wg.Done()
+			<-barrier
+			st, _, raw := env.do(http.MethodPost, fmt.Sprintf("/api/v1/admin/nodes/%d/sync", created.ID), env.jwt, nil)
+			syncStatus = st
+			var dto struct {
+				ConfigRevision int64 `json:"config_revision"`
+			}
+			_ = json.Unmarshal(raw, &dto)
+			syncRev = dto.ConfigRevision
+		}()
+
+		close(barrier)
+		wg.Wait()
+
+		if putStatus != http.StatusOK || syncStatus != http.StatusOK {
+			t.Fatalf("sync round %d unexpected status put=%d sync=%d", r, putStatus, syncStatus)
+		}
+		if putRev == syncRev || min(putRev, syncRev) != prevRev+1 || max(putRev, syncRev) != prevRev+2 {
+			t.Fatalf("sync round %d expected {%d, %d}, got put=%d sync=%d", r, prevRev+1, prevRev+2, putRev, syncRev)
+		}
+		prevRev += 2
+	}
+
+	// Drain agent WebSocket frames: revisions must never regress and final frame must match latest committed state.
+	var lastSync protocol.ServerConfigSync
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		rctx, rcancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		_, data, readErr := conn.Read(rctx)
+		rcancel()
+		if readErr != nil {
+			if lastSync.ConfigRevision == prevRev {
+				break
+			}
+			t.Fatalf("waiting for final config_sync rev=%d (last=%d): %v", prevRev, lastSync.ConfigRevision, readErr)
+		}
+		var envMsg protocol.Envelope
+		if err := json.Unmarshal(data, &envMsg); err != nil {
+			t.Fatal(err)
+		}
+		if envMsg.Type != protocol.MsgTypeServerConfigSync {
+			continue
+		}
+		var syncPayload protocol.ServerConfigSync
+		if err := envMsg.DecodePayload(&syncPayload); err != nil {
+			t.Fatal(err)
+		}
+		if syncPayload.ConfigRevision < lastSync.ConfigRevision {
+			t.Fatalf("agent received regressive config_revision %d after %d", syncPayload.ConfigRevision, lastSync.ConfigRevision)
+		}
+		lastSync = syncPayload
+		if lastSync.ConfigRevision == prevRev {
+			break
+		}
+	}
+
+	wantFinalSnell := fmt.Sprintf("snell-sync-%02d.example.com", syncRounds-1)
+	wantFinalSS := fmt.Sprintf("ss-r%02d.example.com", rounds-1)
+	if lastSync.ConfigRevision != prevRev || lastSync.Snell.STLSSNI != wantFinalSnell || lastSync.SS.STLSSNI != wantFinalSS {
+		t.Fatalf("agent final config_sync mismatch: rev=%d (want %d) snell=%q (want %q) ss=%q (want %q)",
+			lastSync.ConfigRevision, prevRev, lastSync.Snell.STLSSNI, wantFinalSnell, lastSync.SS.STLSSNI, wantFinalSS)
+	}
+}

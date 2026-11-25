@@ -64,16 +64,21 @@ func shadowTLSArgs(cfg protocol.SnellConfig, effectiveInnerPort int) ([]string, 
 	if err != nil {
 		return nil, err
 	}
-	return []string{
+	args := []string{
 		"--v3",
 		"--strict",
-		"--fastopen",
+	}
+	if cfg.TFO {
+		args = append(args, "--fastopen")
+	}
+	args = append(args,
 		"server",
 		"--listen", fmt.Sprintf("[::]:%d", cfg.PublicPort),
 		"--server", fmt.Sprintf("127.0.0.1:%d", effectiveInnerPort),
 		"--tls", tlsTarget,
 		"--password", cfg.STLSPassword,
-	}, nil
+	)
+	return args, nil
 }
 
 func parseSingBoxVersionGTE112(versionOut string) bool {

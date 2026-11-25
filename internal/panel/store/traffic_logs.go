@@ -1,6 +1,7 @@
 package store
 
 import (
+	"container/heap"
 	"context"
 	"database/sql"
 	"errors"
@@ -20,6 +21,9 @@ const (
 	MaxTrafficLogMaxEntries          = 1000000
 	DefaultTrafficLogMergeGapMinutes = 5
 	MaxTrafficLogMergeGapMinutes     = 1440
+
+	trafficDeltaBatchSize = 200
+	maxInt64SQL           = "9223372036854775807"
 )
 
 // TrafficApplyResult summarizes the post-commit state after ApplyTrafficDeltas.
@@ -48,7 +52,7 @@ func (s *Store) ApplyTrafficDeltas(
 	if len(trimmedDate) == 10 && trimmedDate != nowUTC.Format("2006-01-02") {
 		logMinute = trimmedDate + "T" + nowUTC.Format("15:04") + ":00Z"
 	}
-	return s.applyTrafficDeltas(ctx, nodeID, nicRxDelta, nicTxDelta, userDeltas, trimmedDate, logMinute)
+	return s.applyTrafficDeltas(ctx, nodeID, nicRxDelta, nicTxDelta, userDeltas, 0, nil, trimmedDate, logMinute, nowUTC)
 }
 
 // ApplyTrafficDeltasAt atomically applies traffic deltas using the provided timestamp for daily and minute buckets.
@@ -69,9 +73,47 @@ func (s *Store) ApplyTrafficDeltasAt(
 		nicRxDelta,
 		nicTxDelta,
 		userDeltas,
+		0,
+		nil,
 		utc.Format("2006-01-02"),
 		utc.Truncate(time.Minute).Format("2006-01-02T15:04:00Z"),
+		utc,
 	)
+}
+
+// ApplyAgentMetricsAt atomically applies node NIC deltas, per-user deltas, optional admin Snell traffic,
+// and optional node telemetry in a single SQLite transaction.
+func (s *Store) ApplyAgentMetricsAt(
+	ctx context.Context,
+	nodeID int64,
+	nicRxDelta, nicTxDelta int64,
+	userDeltas []protocol.UserTrafficDelta,
+	adminSnellBytes int64,
+	telemetry *NodeTelemetryUpdate,
+	at time.Time,
+) (*TrafficApplyResult, error) {
+	if at.IsZero() {
+		at = time.Now().UTC()
+	}
+	utc := at.UTC()
+	return s.applyTrafficDeltas(
+		ctx,
+		nodeID,
+		nicRxDelta,
+		nicTxDelta,
+		userDeltas,
+		adminSnellBytes,
+		telemetry,
+		utc.Format("2006-01-02"),
+		utc.Truncate(time.Minute).Format("2006-01-02T15:04:00Z"),
+		utc,
+	)
+}
+
+type coalescedUserDelta struct {
+	userID    int64
+	upBytes   int64
+	downBytes int64
 }
 
 func (s *Store) applyTrafficDeltas(
@@ -79,18 +121,62 @@ func (s *Store) applyTrafficDeltas(
 	nodeID int64,
 	nicRxDelta, nicTxDelta int64,
 	userDeltas []protocol.UserTrafficDelta,
+	adminSnellBytes int64,
+	telemetry *NodeTelemetryUpdate,
 	logDate string,
 	logMinute string,
+	at time.Time,
 ) (*TrafficApplyResult, error) {
 	if nodeID <= 0 || strings.TrimSpace(logDate) == "" {
 		return nil, fmt.Errorf("%w: node_id and log_date are required", ErrInvalidArgument)
 	}
-	if nicRxDelta < 0 || nicTxDelta < 0 {
+	if nicRxDelta < 0 || nicTxDelta < 0 || adminSnellBytes < 0 {
 		return nil, fmt.Errorf("%w: traffic deltas must be non-negative", ErrInvalidArgument)
 	}
+
+	byID := make(map[int64]*coalescedUserDelta, len(userDeltas))
+	idOrder := make([]int64, 0, len(userDeltas))
+	var byName map[string]*coalescedUserDelta
+	var nameOrder []string
+
 	for _, ud := range userDeltas {
 		if ud.UpBytes > math.MaxInt64 || ud.DownBytes > math.MaxInt64 {
 			return nil, fmt.Errorf("%w: user traffic delta exceeds int64 max", ErrInvalidArgument)
+		}
+		if ud.UpBytes == 0 && ud.DownBytes == 0 {
+			continue
+		}
+		up := int64(ud.UpBytes)
+		dn := int64(ud.DownBytes)
+		if ud.UserID > 0 {
+			acc, ok := byID[ud.UserID]
+			if !ok {
+				acc = &coalescedUserDelta{userID: ud.UserID}
+				byID[ud.UserID] = acc
+				idOrder = append(idOrder, ud.UserID)
+			}
+			if acc.upBytes > math.MaxInt64-up || acc.downBytes > math.MaxInt64-dn {
+				return nil, fmt.Errorf("%w: user traffic delta exceeds int64 max", ErrInvalidArgument)
+			}
+			acc.upBytes += up
+			acc.downBytes += dn
+			continue
+		}
+		if ud.Username != "" {
+			if byName == nil {
+				byName = make(map[string]*coalescedUserDelta)
+			}
+			acc, ok := byName[ud.Username]
+			if !ok {
+				acc = &coalescedUserDelta{}
+				byName[ud.Username] = acc
+				nameOrder = append(nameOrder, ud.Username)
+			}
+			if acc.upBytes > math.MaxInt64-up || acc.downBytes > math.MaxInt64-dn {
+				return nil, fmt.Errorf("%w: user traffic delta exceeds int64 max", ErrInvalidArgument)
+			}
+			acc.upBytes += up
+			acc.downBytes += dn
 		}
 	}
 
@@ -98,118 +184,273 @@ func (s *Store) applyTrafficDeltas(
 	res := &TrafficApplyResult{}
 
 	err := s.withTx(ctx, func(tx *sql.Tx) error {
-		var curNodeRx, curNodeTx, curTotalRx, curTotalTx int64
-		err := tx.QueryRowContext(ctx, `SELECT cycle_rx_bytes, cycle_tx_bytes, total_rx_bytes, total_tx_bytes FROM nodes WHERE id = ?`, nodeID).Scan(&curNodeRx, &curNodeTx, &curTotalRx, &curTotalTx)
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrNotFound
-		}
-		if err != nil {
-			return mapSQLiteErr(err)
-		}
-		if curNodeRx > math.MaxInt64-nicRxDelta || curNodeTx > math.MaxInt64-nicTxDelta ||
-			curTotalRx > math.MaxInt64-nicRxDelta || curTotalTx > math.MaxInt64-nicTxDelta {
-			return fmt.Errorf("%w: node traffic counter overflow", ErrInvalidArgument)
+		// Resolve rare username-only deltas inside the transaction and merge into byID.
+		if len(nameOrder) > 0 {
+			placeholders := strings.Repeat("?,", len(nameOrder))
+			placeholders = placeholders[:len(placeholders)-1]
+			args := make([]any, len(nameOrder))
+			for i, uname := range nameOrder {
+				args[i] = uname
+			}
+			rows, err := tx.QueryContext(ctx, `SELECT id, username FROM users WHERE username IN (`+placeholders+`)`, args...)
+			if err != nil {
+				return mapSQLiteErr(err)
+			}
+			resolved := make(map[string]int64, len(nameOrder))
+			for rows.Next() {
+				var uid int64
+				var uname string
+				if err := rows.Scan(&uid, &uname); err != nil {
+					_ = rows.Close()
+					return mapSQLiteErr(err)
+				}
+				resolved[uname] = uid
+			}
+			if err := rows.Err(); err != nil {
+				_ = rows.Close()
+				return mapSQLiteErr(err)
+			}
+			_ = rows.Close()
+
+			for _, uname := range nameOrder {
+				uid, ok := resolved[uname]
+				if !ok || uid <= 0 {
+					continue
+				}
+				src := byName[uname]
+				acc, exists := byID[uid]
+				if !exists {
+					acc = &coalescedUserDelta{userID: uid}
+					byID[uid] = acc
+					idOrder = append(idOrder, uid)
+				}
+				if acc.upBytes > math.MaxInt64-src.upBytes || acc.downBytes > math.MaxInt64-src.downBytes {
+					return fmt.Errorf("%w: user traffic delta exceeds int64 max", ErrInvalidArgument)
+				}
+				acc.upBytes += src.upBytes
+				acc.downBytes += src.downBytes
+			}
 		}
 
-		if _, err := tx.ExecContext(ctx, `
+		// 1. Single-statement node update + CHECK(>=0) overflow guard + optional telemetry + RETURNING readback.
+		var updatedNode *Node
+		var nodeErr error
+		if telemetry != nil {
+			lastSeen := telemetry.LastSeenAt
+			if lastSeen.IsZero() {
+				lastSeen = at
+			}
+			if lastSeen.IsZero() {
+				lastSeen = time.Now().UTC()
+			}
+			updatedNode, nodeErr = scanNode(tx.QueryRowContext(ctx, `
 UPDATE nodes SET
-    cycle_rx_bytes = cycle_rx_bytes + ?,
-    cycle_tx_bytes = cycle_tx_bytes + ?,
-    total_rx_bytes = total_rx_bytes + ?,
-    total_tx_bytes = total_tx_bytes + ?,
+    cycle_rx_bytes = CASE WHEN cycle_rx_bytes > ? THEN -1 ELSE cycle_rx_bytes + ? END,
+    cycle_tx_bytes = CASE WHEN cycle_tx_bytes > ? THEN -1 ELSE cycle_tx_bytes + ? END,
+    total_rx_bytes = CASE WHEN total_rx_bytes > ? THEN -1 ELSE total_rx_bytes + ? END,
+    total_tx_bytes = CASE WHEN total_tx_bytes > ? THEN -1 ELSE total_tx_bytes + ? END,
+    public_ip = CASE WHEN ? != '' THEN ? ELSE public_ip END,
+    public_ipv6 = CASE WHEN ? != '' THEN ? ELSE public_ipv6 END,
+    cpu_percent = ?,
+    mem_used_bytes = ?,
+    mem_total_bytes = ?,
+    disk_used_percent = ?,
+    uptime_seconds = ?,
+    rx_bps = ?,
+    tx_bps = ?,
+    core_a_healthy = ?,
+    core_b_healthy = ?,
+    last_seen_at = ?,
+    status = CASE WHEN is_traffic_paused = 1 THEN 'traffic_paused' ELSE 'online' END,
     updated_at = ?
-WHERE id = ?`,
-			nicRxDelta, nicTxDelta, nicRxDelta, nicTxDelta, now, nodeID,
-		); err != nil {
-			return mapSQLiteErr(err)
+WHERE id = ?
+RETURNING `+nodeColumns,
+				math.MaxInt64-nicRxDelta, nicRxDelta,
+				math.MaxInt64-nicTxDelta, nicTxDelta,
+				math.MaxInt64-nicRxDelta, nicRxDelta,
+				math.MaxInt64-nicTxDelta, nicTxDelta,
+				telemetry.PublicIP, telemetry.PublicIP,
+				telemetry.PublicIPv6, telemetry.PublicIPv6,
+				telemetry.CPUPercent, telemetry.MemUsedBytes, telemetry.MemTotalBytes,
+				telemetry.DiskUsedPercent, telemetry.UptimeSeconds, telemetry.RxBPS, telemetry.TxBPS,
+				boolToInt(telemetry.CoreAHealthy), boolToInt(telemetry.CoreBHealthy),
+				FormatSQLiteTime(lastSeen), now, nodeID,
+			))
+		} else {
+			updatedNode, nodeErr = scanNode(tx.QueryRowContext(ctx, `
+UPDATE nodes SET
+    cycle_rx_bytes = CASE WHEN cycle_rx_bytes > ? THEN -1 ELSE cycle_rx_bytes + ? END,
+    cycle_tx_bytes = CASE WHEN cycle_tx_bytes > ? THEN -1 ELSE cycle_tx_bytes + ? END,
+    total_rx_bytes = CASE WHEN total_rx_bytes > ? THEN -1 ELSE total_rx_bytes + ? END,
+    total_tx_bytes = CASE WHEN total_tx_bytes > ? THEN -1 ELSE total_tx_bytes + ? END,
+    updated_at = ?
+WHERE id = ?
+RETURNING `+nodeColumns,
+				math.MaxInt64-nicRxDelta, nicRxDelta,
+				math.MaxInt64-nicTxDelta, nicTxDelta,
+				math.MaxInt64-nicRxDelta, nicRxDelta,
+				math.MaxInt64-nicTxDelta, nicTxDelta,
+				now, nodeID,
+			))
 		}
+		if nodeErr != nil {
+			if errors.Is(nodeErr, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return nodeErr
+		}
+		res.Node = updatedNode
 
+		// 2. Node daily traffic upsert with CHECK(>=0) overflow guard.
 		if nicRxDelta > 0 || nicTxDelta > 0 {
 			if err := upsertAddDailyTrafficTx(ctx, tx, "node", nodeID, logDate, nicRxDelta, nicTxDelta); err != nil {
 				return err
 			}
 		}
 
-		userStmt, err := tx.PrepareContext(ctx, `
-UPDATE users SET
-    used_up_bytes = used_up_bytes + ?,
-    used_down_bytes = used_down_bytes + ?,
-    updated_at = ?
-WHERE id = ?`)
-		if err != nil {
-			return mapSQLiteErr(err)
+		// 3. Optional admin Snell traffic inside the same transaction.
+		if adminSnellBytes > 0 {
+			adminAt := FormatSQLiteTime(at.UTC())
+			if at.IsZero() {
+				adminAt = now
+			}
+			if _, err := tx.ExecContext(ctx, `
+INSERT INTO admin_node_traffic(node_id, bytes, updated_at)
+VALUES (?, ?, ?)
+ON CONFLICT(node_id) DO UPDATE SET
+    bytes = CASE WHEN admin_node_traffic.bytes > `+maxInt64SQL+` - excluded.bytes THEN -1 ELSE admin_node_traffic.bytes + excluded.bytes END,
+    updated_at = excluded.updated_at`,
+				nodeID, adminSnellBytes, adminAt,
+			); err != nil {
+				return mapSQLiteErr(err)
+			}
+			if err := upsertAddTrafficUsageLogTx(ctx, tx, nodeID, 0, logMinute, adminSnellBytes, 0, adminAt); err != nil {
+				return err
+			}
 		}
-		defer userStmt.Close()
 
-		wroteUsageLog := false
-		for _, ud := range userDeltas {
-			if ud.UpBytes == 0 && ud.DownBytes == 0 {
-				continue
+		// 4. Batched user updates + daily/node/minute upserts (chunked at trafficDeltaBatchSize).
+		for start := 0; start < len(idOrder); start += trafficDeltaBatchSize {
+			end := start + trafficDeltaBatchSize
+			if end > len(idOrder) {
+				end = len(idOrder)
 			}
-			uid := ud.UserID
-			if uid <= 0 && ud.Username != "" {
-				err := tx.QueryRowContext(ctx, `SELECT id FROM users WHERE username = ?`, ud.Username).Scan(&uid)
-				if errors.Is(err, sql.ErrNoRows) {
-					continue
+			chunkIDs := idOrder[start:end]
+
+			var valuesBuf strings.Builder
+			updateArgs := make([]any, 0, len(chunkIDs)*5+1)
+			for i, uid := range chunkIDs {
+				if i > 0 {
+					valuesBuf.WriteByte(',')
 				}
-				if err != nil {
-					return mapSQLiteErr(err)
-				}
+				valuesBuf.WriteString("(?, ?, ?, ?, ?)")
+				acc := byID[uid]
+				updateArgs = append(updateArgs, uid, acc.upBytes, acc.downBytes, math.MaxInt64-acc.upBytes, math.MaxInt64-acc.downBytes)
 			}
-			if uid <= 0 {
-				continue
-			}
+			updateArgs = append(updateArgs, now)
 
-			upBytes := int64(ud.UpBytes)
-			downBytes := int64(ud.DownBytes)
+			uQuery := `
+WITH d(id, up_delta, down_delta, max_up, max_down) AS (VALUES ` + valuesBuf.String() + `)
+UPDATE users SET
+    used_up_bytes = CASE WHEN users.used_up_bytes > d.max_up THEN -1 ELSE users.used_up_bytes + d.up_delta END,
+    used_down_bytes = CASE WHEN users.used_down_bytes > d.max_down THEN -1 ELSE users.used_down_bytes + d.down_delta END,
+    updated_at = ?
+FROM d
+WHERE users.id = d.id
+RETURNING users.id`
 
-			var curUp, curDown int64
-			err := tx.QueryRowContext(ctx, `SELECT used_up_bytes, used_down_bytes FROM users WHERE id = ?`, uid).Scan(&curUp, &curDown)
-			if errors.Is(err, sql.ErrNoRows) {
-				res.SkippedUserIDs = append(res.SkippedUserIDs, uid)
-				continue
-			}
+			rows, err := tx.QueryContext(ctx, uQuery, updateArgs...)
 			if err != nil {
 				return mapSQLiteErr(err)
 			}
-			if curUp > math.MaxInt64-upBytes || curDown > math.MaxInt64-downBytes {
-				return fmt.Errorf("%w: user traffic counter overflow", ErrInvalidArgument)
+			updatedSet := make(map[int64]struct{}, len(chunkIDs))
+			for rows.Next() {
+				var uid int64
+				if err := rows.Scan(&uid); err != nil {
+					_ = rows.Close()
+					return mapSQLiteErr(err)
+				}
+				updatedSet[uid] = struct{}{}
 			}
-
-			if _, err := userStmt.ExecContext(ctx, upBytes, downBytes, now, uid); err != nil {
+			if err := rows.Err(); err != nil {
+				_ = rows.Close()
 				return mapSQLiteErr(err)
 			}
-			if err := upsertAddDailyTrafficTx(ctx, tx, "user", uid, logDate, downBytes, upBytes); err != nil {
-				return err
-			}
-			if err := upsertAddUserNodeTrafficTx(ctx, tx, uid, nodeID, upBytes, downBytes, now); err != nil {
-				return err
-			}
-			if err := upsertAddTrafficUsageLogTx(ctx, tx, nodeID, uid, logMinute, downBytes, upBytes, now); err != nil {
-				return err
-			}
-			wroteUsageLog = true
-			res.UpdatedUserIDs = append(res.UpdatedUserIDs, uid)
-		}
+			_ = rows.Close()
 
-		if wroteUsageLog {
-			maxEntries := DefaultTrafficLogMaxEntries
-			var rawMax string
-			if err := tx.QueryRowContext(ctx, `SELECT value FROM system_settings WHERE key = 'traffic_log_max_entries'`).Scan(&rawMax); err == nil {
-				if parsed, convErr := strconv.Atoi(strings.TrimSpace(rawMax)); convErr == nil && parsed > 0 {
-					maxEntries = parsed
+			validItems := make([]*coalescedUserDelta, 0, len(updatedSet))
+			for _, uid := range chunkIDs {
+				if _, ok := updatedSet[uid]; ok {
+					res.UpdatedUserIDs = append(res.UpdatedUserIDs, uid)
+					validItems = append(validItems, byID[uid])
+				} else {
+					res.SkippedUserIDs = append(res.SkippedUserIDs, uid)
 				}
 			}
-			if _, err := pruneTrafficUsageLogsTx(ctx, tx, maxEntries); err != nil {
-				return err
+			if len(validItems) == 0 {
+				continue
+			}
+
+			// Batch traffic_logs_daily ("user").
+			var dailyVals strings.Builder
+			dailyArgs := make([]any, 0, len(validItems)*4)
+			var untVals strings.Builder
+			untArgs := make([]any, 0, len(validItems)*5)
+			var logVals strings.Builder
+			logArgs := make([]any, 0, len(validItems)*6)
+
+			for i, item := range validItems {
+				if i > 0 {
+					dailyVals.WriteByte(',')
+					untVals.WriteByte(',')
+					logVals.WriteByte(',')
+				}
+				dailyVals.WriteString("('user', ?, ?, ?, ?)")
+				dailyArgs = append(dailyArgs, item.userID, logDate, item.downBytes, item.upBytes)
+
+				untVals.WriteString("(?, ?, ?, ?, ?)")
+				untArgs = append(untArgs, item.userID, nodeID, item.upBytes, item.downBytes, now)
+
+				logVals.WriteString("(?, ?, ?, ?, ?, ?)")
+				logArgs = append(logArgs, nodeID, item.userID, logMinute, item.downBytes, item.upBytes, now)
+			}
+
+			if _, err := tx.ExecContext(ctx, `
+INSERT INTO traffic_logs_daily(target_type, target_id, log_date, rx_bytes, tx_bytes)
+VALUES `+dailyVals.String()+`
+ON CONFLICT(target_type, target_id, log_date) DO UPDATE SET
+    rx_bytes = CASE WHEN traffic_logs_daily.rx_bytes > `+maxInt64SQL+` - excluded.rx_bytes THEN -1 ELSE traffic_logs_daily.rx_bytes + excluded.rx_bytes END,
+    tx_bytes = CASE WHEN traffic_logs_daily.tx_bytes > `+maxInt64SQL+` - excluded.tx_bytes THEN -1 ELSE traffic_logs_daily.tx_bytes + excluded.tx_bytes END`,
+				dailyArgs...,
+			); err != nil {
+				return mapSQLiteErr(err)
+			}
+
+			if _, err := tx.ExecContext(ctx, `
+INSERT INTO user_node_traffic(user_id, node_id, up_bytes, down_bytes, updated_at)
+VALUES `+untVals.String()+`
+ON CONFLICT(user_id, node_id) DO UPDATE SET
+    up_bytes = CASE WHEN user_node_traffic.up_bytes > `+maxInt64SQL+` - excluded.up_bytes THEN -1 ELSE user_node_traffic.up_bytes + excluded.up_bytes END,
+    down_bytes = CASE WHEN user_node_traffic.down_bytes > `+maxInt64SQL+` - excluded.down_bytes THEN -1 ELSE user_node_traffic.down_bytes + excluded.down_bytes END,
+    updated_at = excluded.updated_at`,
+				untArgs...,
+			); err != nil {
+				return mapSQLiteErr(err)
+			}
+
+			if _, err := tx.ExecContext(ctx, `
+INSERT INTO traffic_usage_logs(node_id, user_id, log_minute, rx_bytes, tx_bytes, updated_at)
+VALUES `+logVals.String()+`
+ON CONFLICT(node_id, user_id, log_minute) DO UPDATE SET
+    rx_bytes = CASE WHEN traffic_usage_logs.rx_bytes > `+maxInt64SQL+` - excluded.rx_bytes THEN -1 ELSE traffic_usage_logs.rx_bytes + excluded.rx_bytes END,
+    tx_bytes = CASE WHEN traffic_usage_logs.tx_bytes > `+maxInt64SQL+` - excluded.tx_bytes THEN -1 ELSE traffic_usage_logs.tx_bytes + excluded.tx_bytes END,
+    updated_at = excluded.updated_at`,
+				logArgs...,
+			); err != nil {
+				return mapSQLiteErr(err)
 			}
 		}
 
-		updatedNode, err := scanNode(tx.QueryRowContext(ctx, `SELECT `+nodeColumns+` FROM nodes WHERE id = ?`, nodeID))
-		if err != nil {
-			return err
-		}
-		res.Node = updatedNode
 		return nil
 	})
 	if err != nil {
@@ -219,27 +460,12 @@ WHERE id = ?`)
 }
 
 func upsertAddDailyTrafficTx(ctx context.Context, tx *sql.Tx, targetType string, targetID int64, logDate string, rxDelta, txDelta int64) error {
-	var curRx, curTx int64
-	err := tx.QueryRowContext(ctx, `
-SELECT rx_bytes, tx_bytes FROM traffic_logs_daily
-WHERE target_type = ? AND target_id = ? AND log_date = ?`,
-		targetType, targetID, logDate,
-	).Scan(&curRx, &curTx)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return mapSQLiteErr(err)
-	}
-	if err == nil {
-		if curRx > math.MaxInt64-rxDelta || curTx > math.MaxInt64-txDelta {
-			return fmt.Errorf("%w: daily traffic counter overflow", ErrInvalidArgument)
-		}
-	}
-
-	_, err = tx.ExecContext(ctx, `
+	_, err := tx.ExecContext(ctx, `
 INSERT INTO traffic_logs_daily(target_type, target_id, log_date, rx_bytes, tx_bytes)
 VALUES (?, ?, ?, ?, ?)
 ON CONFLICT(target_type, target_id, log_date) DO UPDATE SET
-    rx_bytes = traffic_logs_daily.rx_bytes + excluded.rx_bytes,
-    tx_bytes = traffic_logs_daily.tx_bytes + excluded.tx_bytes`,
+    rx_bytes = CASE WHEN traffic_logs_daily.rx_bytes > `+maxInt64SQL+` - excluded.rx_bytes THEN -1 ELSE traffic_logs_daily.rx_bytes + excluded.rx_bytes END,
+    tx_bytes = CASE WHEN traffic_logs_daily.tx_bytes > `+maxInt64SQL+` - excluded.tx_bytes THEN -1 ELSE traffic_logs_daily.tx_bytes + excluded.tx_bytes END`,
 		targetType, targetID, logDate, rxDelta, txDelta,
 	)
 	return mapSQLiteErr(err)
@@ -331,27 +557,12 @@ ORDER BY (unt.up_bytes + unt.down_bytes) DESC, n.id ASC`,
 }
 
 func upsertAddTrafficUsageLogTx(ctx context.Context, tx *sql.Tx, nodeID, userID int64, logMinute string, rxDelta, txDelta int64, now string) error {
-	var curRx, curTx int64
-	err := tx.QueryRowContext(ctx, `
-SELECT rx_bytes, tx_bytes FROM traffic_usage_logs
-WHERE node_id = ? AND user_id = ? AND log_minute = ?`,
-		nodeID, userID, logMinute,
-	).Scan(&curRx, &curTx)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return mapSQLiteErr(err)
-	}
-	if err == nil {
-		if curRx > math.MaxInt64-rxDelta || curTx > math.MaxInt64-txDelta {
-			return fmt.Errorf("%w: minute traffic usage counter overflow", ErrInvalidArgument)
-		}
-	}
-
-	_, err = tx.ExecContext(ctx, `
+	_, err := tx.ExecContext(ctx, `
 INSERT INTO traffic_usage_logs(node_id, user_id, log_minute, rx_bytes, tx_bytes, updated_at)
 VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT(node_id, user_id, log_minute) DO UPDATE SET
-    rx_bytes = traffic_usage_logs.rx_bytes + excluded.rx_bytes,
-    tx_bytes = traffic_usage_logs.tx_bytes + excluded.tx_bytes,
+    rx_bytes = CASE WHEN traffic_usage_logs.rx_bytes > `+maxInt64SQL+` - excluded.rx_bytes THEN -1 ELSE traffic_usage_logs.rx_bytes + excluded.rx_bytes END,
+    tx_bytes = CASE WHEN traffic_usage_logs.tx_bytes > `+maxInt64SQL+` - excluded.tx_bytes THEN -1 ELSE traffic_usage_logs.tx_bytes + excluded.tx_bytes END,
     updated_at = excluded.updated_at`,
 		nodeID, userID, logMinute, rxDelta, txDelta, now,
 	)
@@ -412,6 +623,82 @@ func (s *Store) PruneTrafficUsageLogs(ctx context.Context, maxEntries int) (int6
 	return pruned, nil
 }
 
+// PruneConfiguredTrafficUsageLogs reads traffic_log_max_entries (defaulting to DefaultTrafficLogMaxEntries)
+// and deletes older rows exceeding that limit in a single transaction.
+func (s *Store) PruneConfiguredTrafficUsageLogs(ctx context.Context) (int64, error) {
+	var pruned int64
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		maxEntries := DefaultTrafficLogMaxEntries
+		var rawMax string
+		if err := tx.QueryRowContext(ctx, `SELECT value FROM system_settings WHERE key = 'traffic_log_max_entries'`).Scan(&rawMax); err == nil {
+			if parsed, convErr := strconv.Atoi(strings.TrimSpace(rawMax)); convErr == nil && parsed > 0 {
+				maxEntries = parsed
+			}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return mapSQLiteErr(err)
+		}
+		n, err := pruneTrafficUsageLogsTx(ctx, tx, maxEntries)
+		if err != nil {
+			return err
+		}
+		pruned = n
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return pruned, nil
+}
+
+type mergeGroupKey struct {
+	nodeID int64
+	userID int64
+}
+
+type activeMergeSession struct {
+	row       TrafficUsageLog
+	startTime time.Time
+	hasTime   bool
+}
+
+type trafficLogMinHeap []TrafficUsageLog
+
+func trafficLogBetter(a, b TrafficUsageLog) bool {
+	if a.EndTime != b.EndTime {
+		return a.EndTime > b.EndTime
+	}
+	if a.StartTime != b.StartTime {
+		return a.StartTime > b.StartTime
+	}
+	return a.ID > b.ID
+}
+
+func (h trafficLogMinHeap) Len() int           { return len(h) }
+func (h trafficLogMinHeap) Less(i, j int) bool { return trafficLogBetter(h[j], h[i]) }
+func (h trafficLogMinHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *trafficLogMinHeap) Push(x any)        { *h = append(*h, x.(TrafficUsageLog)) }
+func (h *trafficLogMinHeap) Pop() any {
+	old := *h
+	n := len(old)
+	item := old[n-1]
+	*h = old[:n-1]
+	return item
+}
+
+func pushTopMergedSession(top *trafficLogMinHeap, outLimit int, item TrafficUsageLog) {
+	if outLimit <= 0 {
+		return
+	}
+	if top.Len() < outLimit {
+		heap.Push(top, item)
+		return
+	}
+	if trafficLogBetter(item, (*top)[0]) {
+		(*top)[0] = item
+		heap.Fix(top, 0)
+	}
+}
+
 // QueryTrafficUsageLogs returns per-minute node+user traffic records sorted descending by time.
 // When filter.Merge is true, consecutive minutes for the same node and user within MergeGapMinutes are combined.
 func (s *Store) QueryTrafficUsageLogs(ctx context.Context, filter TrafficUsageLogFilter) ([]TrafficUsageLog, error) {
@@ -443,10 +730,6 @@ func (s *Store) QueryTrafficUsageLogs(ctx context.Context, filter TrafficUsageLo
 	if outLimit > 5000 {
 		outLimit = 5000
 	}
-	sqlLimit := outLimit
-	if filter.Merge {
-		sqlLimit = 5000
-	}
 
 	clauses = append(clauses, "(l.user_id = 0 OR u.id IS NOT NULL)")
 
@@ -458,8 +741,11 @@ LEFT JOIN users u ON u.id = l.user_id`
 	if len(clauses) > 0 {
 		query += " WHERE " + strings.Join(clauses, " AND ")
 	}
-	query += " ORDER BY l.log_minute DESC, l.id DESC LIMIT ?"
-	args = append(args, sqlLimit)
+	query += " ORDER BY l.log_minute DESC, l.id DESC"
+	if !filter.Merge {
+		query += " LIMIT ?"
+		args = append(args, outLimit)
+	}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -467,7 +753,41 @@ LEFT JOIN users u ON u.id = l.user_id`
 	}
 	defer rows.Close()
 
-	out := make([]TrafficUsageLog, 0)
+	if !filter.Merge {
+		out := make([]TrafficUsageLog, 0)
+		for rows.Next() {
+			var row TrafficUsageLog
+			if err := rows.Scan(
+				&row.ID, &row.NodeID, &row.NodeName, &row.RegionTag,
+				&row.UserID, &row.Username, &row.LogMinute,
+				&row.RxBytes, &row.TxBytes, &row.UpdatedAt,
+			); err != nil {
+				return nil, mapSQLiteErr(err)
+			}
+			if row.UserID == 0 {
+				row.Username = "管理员 (Snell)"
+			}
+			out = append(out, row)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, mapSQLiteErr(err)
+		}
+		return out, nil
+	}
+
+	gapMinutes := filter.MergeGapMinutes
+	if gapMinutes <= 0 {
+		gapMinutes = DefaultTrafficLogMergeGapMinutes
+	}
+	if gapMinutes > MaxTrafficLogMergeGapMinutes {
+		gapMinutes = MaxTrafficLogMergeGapMinutes
+	}
+	maxGap := time.Duration(gapMinutes) * time.Minute
+
+	active := make(map[mergeGroupKey]*activeMergeSession)
+	top := make(trafficLogMinHeap, 0, min(outLimit, 64))
+	var lastSweepMinute string
+
 	for rows.Next() {
 		var row TrafficUsageLog
 		if err := rows.Scan(
@@ -480,15 +800,81 @@ LEFT JOIN users u ON u.id = l.user_id`
 		if row.UserID == 0 {
 			row.Username = "管理员 (Snell)"
 		}
-		out = append(out, row)
+
+		rTime, rHasTime := parseTrafficLogTime(row.LogMinute)
+		gk := mergeGroupKey{nodeID: row.NodeID, userID: row.UserID}
+		if act, ok := active[gk]; ok {
+			shouldMerge := false
+			if act.hasTime && rHasTime {
+				diff := act.startTime.Sub(rTime)
+				shouldMerge = diff >= 0 && diff <= maxGap
+			} else if row.LogMinute == act.row.StartTime {
+				shouldMerge = true
+			}
+			if shouldMerge {
+				act.row.RxBytes += row.RxBytes
+				act.row.TxBytes += row.TxBytes
+				act.row.StartTime = row.LogMinute
+				act.startTime = rTime
+				act.hasTime = rHasTime
+			} else {
+				pushTopMergedSession(&top, outLimit, act.row)
+				row.StartTime = row.LogMinute
+				row.EndTime = row.LogMinute
+				active[gk] = &activeMergeSession{
+					row:       row,
+					startTime: rTime,
+					hasTime:   rHasTime,
+				}
+			}
+		} else {
+			row.StartTime = row.LogMinute
+			row.EndTime = row.LogMinute
+			active[gk] = &activeMergeSession{
+				row:       row,
+				startTime: rTime,
+				hasTime:   rHasTime,
+			}
+		}
+
+		if rHasTime && row.LogMinute != lastSweepMinute {
+			lastSweepMinute = row.LogMinute
+			for k, act := range active {
+				if act.hasTime && act.startTime.Sub(rTime) > maxGap && act.row.StartTime > row.LogMinute {
+					pushTopMergedSession(&top, outLimit, act.row)
+					delete(active, k)
+				}
+			}
+			if top.Len() >= outLimit {
+				kth := top[0]
+				if kth.EndTime > row.LogMinute {
+					anyActiveCanBeat := false
+					for _, act := range active {
+						if act.row.EndTime >= kth.EndTime {
+							anyActiveCanBeat = true
+							break
+						}
+					}
+					if !anyActiveCanBeat {
+						break
+					}
+				}
+			}
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, mapSQLiteErr(err)
 	}
-	if filter.Merge {
-		return mergeTrafficUsageLogs(out, filter.MergeGapMinutes, outLimit), nil
+
+	for _, act := range active {
+		pushTopMergedSession(&top, outLimit, act.row)
 	}
-	return out, nil
+
+	merged := []TrafficUsageLog(top)
+	sort.Slice(merged, func(i, j int) bool {
+		return trafficLogBetter(merged[i], merged[j])
+	})
+	return merged, nil
 }
 
 func parseTrafficLogTime(raw string) (time.Time, bool) {
@@ -603,39 +989,18 @@ func (s *Store) RecordAdminSnellTraffic(ctx context.Context, nodeID int64, delta
 			return mapSQLiteErr(err)
 		}
 
-		var curBytes int64
-		err := tx.QueryRowContext(ctx, `SELECT bytes FROM admin_node_traffic WHERE node_id = ?`, nodeID).Scan(&curBytes)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return mapSQLiteErr(err)
-		}
-		if err == nil && curBytes > math.MaxInt64-deltaBytes {
-			return fmt.Errorf("%w: admin node traffic counter overflow", ErrInvalidArgument)
-		}
-
 		if _, err := tx.ExecContext(ctx, `
 INSERT INTO admin_node_traffic(node_id, bytes, updated_at)
 VALUES (?, ?, ?)
 ON CONFLICT(node_id) DO UPDATE SET
-    bytes = admin_node_traffic.bytes + excluded.bytes,
+    bytes = CASE WHEN admin_node_traffic.bytes > `+maxInt64SQL+` - excluded.bytes THEN -1 ELSE admin_node_traffic.bytes + excluded.bytes END,
     updated_at = excluded.updated_at`,
 			nodeID, deltaBytes, now,
 		); err != nil {
 			return mapSQLiteErr(err)
 		}
 
-		if err := upsertAddTrafficUsageLogTx(ctx, tx, nodeID, 0, logMinute, deltaBytes, 0, now); err != nil {
-			return err
-		}
-
-		maxEntries := DefaultTrafficLogMaxEntries
-		var rawMax string
-		if err := tx.QueryRowContext(ctx, `SELECT value FROM system_settings WHERE key = 'traffic_log_max_entries'`).Scan(&rawMax); err == nil {
-			if parsed, convErr := strconv.Atoi(strings.TrimSpace(rawMax)); convErr == nil && parsed > 0 {
-				maxEntries = parsed
-			}
-		}
-		_, err = pruneTrafficUsageLogsTx(ctx, tx, maxEntries)
-		return err
+		return upsertAddTrafficUsageLogTx(ctx, tx, nodeID, 0, logMinute, deltaBytes, 0, now)
 	})
 }
 

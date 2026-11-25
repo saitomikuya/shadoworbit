@@ -13,6 +13,7 @@ import (
 
 const (
 	defaultSweepInterval           = 15 * time.Second
+	defaultTrafficLogPruneInterval = 1 * time.Minute
 	defaultGitHubAPIBaseURL        = "https://api.github.com"
 	defaultHTTPTimeout             = 20 * time.Second
 	defaultWarningThresholdPercent = 85
@@ -65,6 +66,15 @@ func WithSweepInterval(d time.Duration) Option {
 	return func(s *Scheduler) {
 		if d > 0 {
 			s.sweepInterval = d
+		}
+	}
+}
+
+// WithTrafficLogPruneInterval sets the periodic traffic_usage_logs pruning interval.
+func WithTrafficLogPruneInterval(d time.Duration) Option {
+	return func(s *Scheduler) {
+		if d > 0 {
+			s.trafficLogPruneInterval = d
 		}
 	}
 }

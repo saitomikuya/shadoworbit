@@ -26,12 +26,13 @@ type Scheduler struct {
 	hub      *hub.Hub
 	notifier AlertNotifier
 
-	logger             *slog.Logger
-	now                func() time.Time
-	sweepInterval      time.Duration
-	kernelSyncInterval time.Duration
-	githubAPIBaseURL   string
-	httpClient         *http.Client
+	logger                  *slog.Logger
+	now                     func() time.Time
+	sweepInterval           time.Duration
+	trafficLogPruneInterval time.Duration
+	kernelSyncInterval      time.Duration
+	githubAPIBaseURL        string
+	httpClient              *http.Client
 
 	lifecycleMu sync.Mutex
 	started     bool
@@ -59,10 +60,11 @@ func NewScheduler(st *store.Store, h *hub.Hub, notifier AlertNotifier, opts ...O
 		store:              st,
 		hub:                h,
 		notifier:           sanitizeNotifier(notifier),
-		logger:             slog.Default(),
-		now:                time.Now,
-		sweepInterval:      defaultSweepInterval,
-		kernelSyncInterval: 0,
+		logger:                  slog.Default(),
+		now:                     time.Now,
+		sweepInterval:           defaultSweepInterval,
+		trafficLogPruneInterval: defaultTrafficLogPruneInterval,
+		kernelSyncInterval:      0,
 		githubAPIBaseURL:   defaultGitHubAPIBaseURL,
 		httpClient:         &http.Client{Timeout: defaultHTTPTimeout},
 		nodeLocks:          make(map[int64]*sync.Mutex),
@@ -191,6 +193,14 @@ func (s *Scheduler) runLoop(ctx context.Context) {
 	sweepTicker := time.NewTicker(s.sweepInterval)
 	defer sweepTicker.Stop()
 
+	var pruneTicker *time.Ticker
+	var pruneCh <-chan time.Time
+	if s.trafficLogPruneInterval > 0 {
+		pruneTicker = time.NewTicker(s.trafficLogPruneInterval)
+		pruneCh = pruneTicker.C
+		defer pruneTicker.Stop()
+	}
+
 	var kernelTicker *time.Ticker
 	var kernelCh <-chan time.Time
 	if s.kernelSyncInterval > 0 {
@@ -205,6 +215,12 @@ func (s *Scheduler) runLoop(ctx context.Context) {
 			return
 		case <-sweepTicker.C:
 			s.runSweep(ctx)
+		case <-pruneCh:
+			if s.store != nil {
+				if _, err := s.store.PruneConfiguredTrafficUsageLogs(ctx); err != nil && ctx.Err() == nil {
+					s.logger.Warn("scheduler: periodic traffic usage log prune failed", "err", err)
+				}
+			}
 		case <-kernelCh:
 			if _, err := s.SyncKernels(ctx); err != nil && ctx.Err() == nil {
 				s.logger.Warn("scheduler: periodic kernel sync failed", "err", err)

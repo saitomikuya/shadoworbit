@@ -20,37 +20,51 @@ type procNetDevEntry struct {
 }
 
 func (c *Collector) pollNIC() error {
+	rxDelta, txDelta, commit, err := c.sampleNIC()
+	if err != nil {
+		return err
+	}
+	if rxDelta > 0 || txDelta > 0 {
+		if err := c.addNICDelta(rxDelta, txDelta); err != nil {
+			return fmt.Errorf("persist NIC delta: %w", err)
+		}
+	}
+	if commit != nil {
+		commit()
+	}
+	return nil
+}
+
+func (c *Collector) sampleNIC() (uint64, uint64, func(), error) {
 	raw, err := os.ReadFile(c.opts.ProcNetDevPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) && runtime.GOOS == "darwin" && c.opts.ProcNetDevPath == defaultProcNetDevPath {
-			return nil
+			return 0, 0, nil, nil
 		}
-		return fmt.Errorf("read %q: %w", c.opts.ProcNetDevPath, err)
+		return 0, 0, nil, fmt.Errorf("read %q: %w", c.opts.ProcNetDevPath, err)
 	}
 
 	entries, byName, err := parseProcNetDev(raw)
 	if err != nil {
-		return fmt.Errorf("parse %q: %w", c.opts.ProcNetDevPath, err)
+		return 0, 0, nil, fmt.Errorf("parse %q: %w", c.opts.ProcNetDevPath, err)
 	}
 	if len(entries) == 0 {
-		return fmt.Errorf("no interfaces found in %q", c.opts.ProcNetDevPath)
+		return 0, 0, nil, fmt.Errorf("no interfaces found in %q", c.opts.ProcNetDevPath)
 	}
 
 	iface, err := c.resolveInterface(entries, byName)
 	if err != nil {
-		return err
+		return 0, 0, nil, err
 	}
 	entry, ok := byName[iface]
 	if !ok {
-		return fmt.Errorf("interface %q not found in %q", iface, c.opts.ProcNetDevPath)
+		return 0, 0, nil, fmt.Errorf("interface %q not found in %q", iface, c.opts.ProcNetDevPath)
 	}
 
 	now := time.Now()
 	var rxDelta, txDelta uint64
 
 	c.nicMu.Lock()
-	defer c.nicMu.Unlock()
-
 	if !c.hasLastNIC || c.lastIface != iface {
 		c.hasLastNIC = true
 		c.lastIface = iface
@@ -59,7 +73,8 @@ func (c *Collector) pollNIC() error {
 		c.lastNICTime = now
 		c.lastRxBPS = 0
 		c.lastTxBPS = 0
-		return nil
+		c.nicMu.Unlock()
+		return 0, 0, nil, nil
 	}
 
 	if entry.rxBytes >= c.lastNICRx {
@@ -74,26 +89,27 @@ func (c *Collector) pollNIC() error {
 	} else {
 		txDelta = 0
 	}
+	c.nicMu.Unlock()
 
-	if rxDelta > 0 || txDelta > 0 {
-		if err := c.addNICDelta(rxDelta, txDelta); err != nil {
-			return fmt.Errorf("persist NIC delta: %w", err)
+	commit := func() {
+		c.nicMu.Lock()
+		defer c.nicMu.Unlock()
+		if !c.hasLastNIC || c.lastIface != iface {
+			return
 		}
+		elapsed := now.Sub(c.lastNICTime).Seconds()
+		if elapsed > 0 {
+			c.lastRxBPS = uint64(float64(rxDelta) / elapsed)
+			c.lastTxBPS = uint64(float64(txDelta) / elapsed)
+		} else {
+			c.lastRxBPS = 0
+			c.lastTxBPS = 0
+		}
+		c.lastNICRx = entry.rxBytes
+		c.lastNICTx = entry.txBytes
+		c.lastNICTime = now
 	}
-
-	elapsed := now.Sub(c.lastNICTime).Seconds()
-	if elapsed > 0 {
-		c.lastRxBPS = uint64(float64(rxDelta) / elapsed)
-		c.lastTxBPS = uint64(float64(txDelta) / elapsed)
-	} else {
-		c.lastRxBPS = 0
-		c.lastTxBPS = 0
-	}
-
-	c.lastNICRx = entry.rxBytes
-	c.lastNICTx = entry.txBytes
-	c.lastNICTime = now
-	return nil
+	return rxDelta, txDelta, commit, nil
 }
 
 func (c *Collector) resolveInterface(entries []procNetDevEntry, byName map[string]procNetDevEntry) (string, error) {

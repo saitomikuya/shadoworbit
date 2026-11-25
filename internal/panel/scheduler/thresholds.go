@@ -137,6 +137,9 @@ func (s *Scheduler) evaluateNodeLocked(ctx context.Context, node *store.Node) er
 				return err
 			}
 			s.syncNodeIgnoringOffline(ctx, node.ID)
+			if s.hub != nil {
+				s.hub.BroadcastPublicStatus()
+			}
 			s.setNodeWarned(node.ID, true)
 
 			if node.Enabled {
@@ -172,6 +175,9 @@ func (s *Scheduler) evaluateNodeLocked(ctx context.Context, node *store.Node) er
 			return err
 		}
 		s.syncNodeIgnoringOffline(ctx, node.ID)
+		if s.hub != nil {
+			s.hub.BroadcastPublicStatus()
+		}
 		s.setNodeWarned(node.ID, false)
 
 		s.notify(ctx, webhook.AlertEvent{

@@ -166,7 +166,16 @@ func (s *Store) Close() error {
 	s.closeOnce.Do(func() {
 		if !s.isMemory {
 			chkCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-			_, _ = s.db.ExecContext(chkCtx, `PRAGMA wal_checkpoint(TRUNCATE);`)
+			if conn, err := s.db.Conn(chkCtx); err == nil {
+				// Avoid waiting up to busy_timeout (5000ms) inside SQLite's _walBusyLock
+				// if a canceled query left an active read mark or interrupted statement.
+				_, _ = conn.ExecContext(chkCtx, `PRAGMA busy_timeout = 0;`)
+				var busy, logFrames, checkpointedFrames int
+				if err := conn.QueryRowContext(chkCtx, `PRAGMA wal_checkpoint(TRUNCATE);`).Scan(&busy, &logFrames, &checkpointedFrames); err != nil || busy != 0 {
+					_, _ = conn.ExecContext(chkCtx, `PRAGMA wal_checkpoint(PASSIVE);`)
+				}
+				_ = conn.Close()
+			}
 			cancel()
 		}
 		s.closeErr = s.db.Close()

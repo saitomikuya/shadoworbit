@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"snell-panel/internal/panel/auth"
 	"snell-panel/internal/panel/hub"
@@ -86,26 +89,49 @@ func (o *optionalInt64) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+type updateSnellConfigRequest struct {
+	Enabled         *bool   `json:"enabled"`
+	Version         *string `json:"version"`
+	PublicPort      *int    `json:"public_port"`
+	InnerPort       *int    `json:"inner_port"`
+	PSK             *string `json:"psk"`
+	Obfs            *string `json:"obfs"`
+	TFO             *bool   `json:"tfo"`
+	DNSIPPreference *string `json:"dns_ip_preference"`
+	STLSPassword    *string `json:"stls_password"`
+	STLSSNI         *string `json:"stls_sni"`
+}
+
+type updateSSConfigRequest struct {
+	Enabled *bool   `json:"enabled"`
+	TCPPort *int    `json:"tcp_port"`
+	UDPPort *int    `json:"udp_port"`
+	Cipher  *string `json:"cipher"`
+	IPSK    *string `json:"ipsk"`
+	STLSSNI *string `json:"stls_sni"`
+	TFO     *bool   `json:"tfo"`
+}
+
 type updateNodeRequest struct {
-	Name                  *string               `json:"name"`
-	RegionTag             *string               `json:"region_tag"`
-	PublicIP              *string               `json:"public_ip"`
-	PublicIPv6            *string               `json:"public_ipv6"`
-	CustomEntryHost       *string               `json:"custom_entry_host"`
-	CustomEntryPort       *int                  `json:"custom_entry_port"`
-	SortOrder             *int                  `json:"sort_order"`
-	Enabled               *bool                 `json:"enabled"`
-	SnellConfig           *protocol.SnellConfig `json:"snell_config"`
-	SSConfig              *protocol.SSConfig    `json:"ss_config"`
-	DNSUnlockEnabled      *bool                 `json:"dns_unlock_enabled"`
-	DNSUnlockServer       *string               `json:"dns_unlock_server"`
-	DNSRuleGroupID        optionalInt64         `json:"dns_rule_group_id"`
-	DNSExtraRules         *[]string             `json:"dns_extra_rules"`
-	TrafficLimitBytes     *int64                `json:"traffic_limit_bytes"`
-	TrafficThresholdBytes *int64                `json:"traffic_threshold_bytes"`
-	TrafficCountMode      *string               `json:"traffic_count_mode"`
-	ThresholdAction       *string               `json:"threshold_action"`
-	BillingResetDay       *int                  `json:"billing_reset_day"`
+	Name                  *string                   `json:"name"`
+	RegionTag             *string                   `json:"region_tag"`
+	PublicIP              *string                   `json:"public_ip"`
+	PublicIPv6            *string                   `json:"public_ipv6"`
+	CustomEntryHost       *string                   `json:"custom_entry_host"`
+	CustomEntryPort       *int                      `json:"custom_entry_port"`
+	SortOrder             *int                      `json:"sort_order"`
+	Enabled               *bool                     `json:"enabled"`
+	SnellConfig           *updateSnellConfigRequest `json:"snell_config"`
+	SSConfig              *updateSSConfigRequest    `json:"ss_config"`
+	DNSUnlockEnabled      *bool                     `json:"dns_unlock_enabled"`
+	DNSUnlockServer       *string                   `json:"dns_unlock_server"`
+	DNSRuleGroupID        optionalInt64             `json:"dns_rule_group_id"`
+	DNSExtraRules         *[]string                 `json:"dns_extra_rules"`
+	TrafficLimitBytes     *int64                    `json:"traffic_limit_bytes"`
+	TrafficThresholdBytes *int64                    `json:"traffic_threshold_bytes"`
+	TrafficCountMode      *string                   `json:"traffic_count_mode"`
+	ThresholdAction       *string                   `json:"threshold_action"`
+	BillingResetDay       *int                      `json:"billing_reset_day"`
 }
 
 type calibrateTrafficRequest struct {
@@ -204,11 +230,50 @@ func validateNodeConfig(n *store.Node) error {
 	if n.SnellConfig.Obfs != "" && !protocol.IsValidSnellObfs(n.SnellConfig.Obfs) {
 		return fmt.Errorf("invalid snell_config.obfs %q", n.SnellConfig.Obfs)
 	}
+	switch n.SnellConfig.DNSIPPreference {
+	case "", protocol.DNSIPPrefPreferIPv4, protocol.DNSIPPrefPreferIPv6, protocol.DNSIPPrefIPv4Only, protocol.DNSIPPrefAuto:
+	default:
+		return fmt.Errorf("invalid snell_config.dns_ip_preference %q", n.SnellConfig.DNSIPPreference)
+	}
+	if n.SnellConfig.PSK != "" {
+		for _, r := range n.SnellConfig.PSK {
+			if unicode.IsControl(r) || unicode.IsSpace(r) || r == ';' || r == '#' {
+				return errors.New("snell_config.psk cannot contain whitespace, control characters, ';' or '#'")
+			}
+		}
+	}
+	if n.SnellConfig.STLSPassword != "" {
+		if strings.TrimSpace(n.SnellConfig.STLSPassword) == "" || hasControlChars(n.SnellConfig.STLSPassword) {
+			return errors.New("snell_config.stls_password cannot be blank or contain control characters")
+		}
+	}
+	if n.SnellConfig.STLSSNI != "" {
+		if err := validateSTLSSNI(n.SnellConfig.STLSSNI); err != nil {
+			return fmt.Errorf("invalid snell_config.stls_sni: %w", err)
+		}
+	}
 	if n.SSConfig.TCPPort < 0 || n.SSConfig.TCPPort > 65535 {
 		return errors.New("ss_config.tcp_port must be between 0 and 65535")
 	}
 	if n.SSConfig.UDPPort < 0 || n.SSConfig.UDPPort > 65535 {
 		return errors.New("ss_config.udp_port must be between 0 and 65535")
+	}
+	if n.SSConfig.STLSSNI != "" {
+		if err := validateSTLSSNI(n.SSConfig.STLSSNI); err != nil {
+			return fmt.Errorf("invalid ss_config.stls_sni: %w", err)
+		}
+	}
+	if n.SnellConfig.Enabled && n.SnellConfig.PublicPort > 0 && n.SnellConfig.InnerPort > 0 &&
+		n.SnellConfig.PublicPort == n.SnellConfig.InnerPort {
+		return fmt.Errorf("snell_config.public_port (%d) cannot equal snell_config.inner_port", n.SnellConfig.PublicPort)
+	}
+	if n.SnellConfig.Enabled && n.SSConfig.Enabled && n.SSConfig.TCPPort > 0 {
+		if n.SnellConfig.PublicPort > 0 && n.SSConfig.TCPPort == n.SnellConfig.PublicPort {
+			return fmt.Errorf("ss_config.tcp_port (%d) cannot collide with snell_config.public_port", n.SSConfig.TCPPort)
+		}
+		if n.SnellConfig.InnerPort > 0 && n.SSConfig.TCPPort == n.SnellConfig.InnerPort {
+			return fmt.Errorf("ss_config.tcp_port (%d) cannot collide with snell_config.inner_port", n.SSConfig.TCPPort)
+		}
 	}
 	if n.SSConfig.Cipher != "" && !protocol.IsValidCipher(n.SSConfig.Cipher) {
 		return fmt.Errorf("invalid ss_config.cipher %q", n.SSConfig.Cipher)
@@ -369,6 +434,10 @@ func (s *server) handleCreateNode(w http.ResponseWriter, r *http.Request, _ *aut
 		}
 	}
 
+	if s.hub != nil {
+		s.hub.BroadcastPublicStatus()
+	}
+
 	created, err := s.store.GetNodeByID(r.Context(), node.ID)
 	if err != nil {
 		writeJSON(w, http.StatusCreated, s.toNodeDTO(*node, rawToken))
@@ -410,91 +479,137 @@ func (s *server) handleUpdateNode(w http.ResponseWriter, r *http.Request, _ *aut
 		return
 	}
 
-	existing, err := s.store.GetNodeByID(r.Context(), id)
+	var valErr error
+	committed, err := s.store.UpdateNodeTx(r.Context(), id, func(existing *store.Node) (*store.Node, error) {
+		updated := *existing
+		if req.Name != nil {
+			updated.Name = strings.TrimSpace(*req.Name)
+		}
+		if req.RegionTag != nil {
+			updated.RegionTag = *req.RegionTag
+		}
+		if req.PublicIP != nil {
+			updated.PublicIP = *req.PublicIP
+		}
+		if req.PublicIPv6 != nil {
+			updated.PublicIPv6 = *req.PublicIPv6
+		}
+		if req.CustomEntryHost != nil {
+			updated.CustomEntryHost = *req.CustomEntryHost
+		}
+		if req.CustomEntryPort != nil {
+			updated.CustomEntryPort = *req.CustomEntryPort
+		}
+		if req.SortOrder != nil {
+			updated.SortOrder = *req.SortOrder
+		}
+		if req.Enabled != nil {
+			updated.Enabled = *req.Enabled
+		}
+		if req.SnellConfig != nil {
+			if req.SnellConfig.Enabled != nil {
+				updated.SnellConfig.Enabled = *req.SnellConfig.Enabled
+			}
+			if req.SnellConfig.Version != nil {
+				updated.SnellConfig.Version = *req.SnellConfig.Version
+			}
+			if req.SnellConfig.PublicPort != nil {
+				updated.SnellConfig.PublicPort = *req.SnellConfig.PublicPort
+			}
+			if req.SnellConfig.InnerPort != nil {
+				updated.SnellConfig.InnerPort = *req.SnellConfig.InnerPort
+			}
+			if req.SnellConfig.PSK != nil {
+				updated.SnellConfig.PSK = *req.SnellConfig.PSK
+			}
+			if req.SnellConfig.Obfs != nil {
+				updated.SnellConfig.Obfs = *req.SnellConfig.Obfs
+			}
+			if req.SnellConfig.TFO != nil {
+				updated.SnellConfig.TFO = *req.SnellConfig.TFO
+			}
+			if req.SnellConfig.DNSIPPreference != nil {
+				updated.SnellConfig.DNSIPPreference = *req.SnellConfig.DNSIPPreference
+			}
+			if req.SnellConfig.STLSPassword != nil {
+				updated.SnellConfig.STLSPassword = *req.SnellConfig.STLSPassword
+			}
+			if req.SnellConfig.STLSSNI != nil {
+				updated.SnellConfig.STLSSNI = *req.SnellConfig.STLSSNI
+			}
+			if updated.SnellConfig.Enabled && updated.SnellConfig.Version == "" {
+				updated.SnellConfig.Version = protocol.SnellVersionV5
+			}
+		}
+		if req.SSConfig != nil {
+			if req.SSConfig.Enabled != nil {
+				updated.SSConfig.Enabled = *req.SSConfig.Enabled
+			}
+			if req.SSConfig.TCPPort != nil {
+				updated.SSConfig.TCPPort = *req.SSConfig.TCPPort
+			}
+			if req.SSConfig.UDPPort != nil {
+				updated.SSConfig.UDPPort = *req.SSConfig.UDPPort
+			}
+			if req.SSConfig.Cipher != nil {
+				updated.SSConfig.Cipher = *req.SSConfig.Cipher
+			}
+			if req.SSConfig.IPSK != nil {
+				updated.SSConfig.IPSK = *req.SSConfig.IPSK
+			}
+			if req.SSConfig.STLSSNI != nil {
+				updated.SSConfig.STLSSNI = *req.SSConfig.STLSSNI
+			}
+			if req.SSConfig.TFO != nil {
+				updated.SSConfig.TFO = *req.SSConfig.TFO
+			}
+			updated.SSConfig.Users = nil
+		}
+		if req.DNSUnlockEnabled != nil {
+			updated.DNSUnlockEnabled = *req.DNSUnlockEnabled
+		}
+		if req.DNSUnlockServer != nil {
+			updated.DNSUnlockServer = *req.DNSUnlockServer
+		}
+		if req.DNSRuleGroupID.set {
+			updated.DNSRuleGroupID = req.DNSRuleGroupID.value
+		}
+		if req.DNSExtraRules != nil {
+			if *req.DNSExtraRules == nil {
+				updated.DNSExtraRules = []string{}
+			} else {
+				updated.DNSExtraRules = append([]string(nil), (*req.DNSExtraRules)...)
+			}
+		}
+		if req.TrafficLimitBytes != nil {
+			updated.TrafficLimitBytes = *req.TrafficLimitBytes
+		}
+		if req.TrafficThresholdBytes != nil {
+			updated.TrafficThresholdBytes = *req.TrafficThresholdBytes
+		}
+		if req.TrafficCountMode != nil {
+			updated.TrafficCountMode = strings.TrimSpace(*req.TrafficCountMode)
+		}
+		if req.ThresholdAction != nil {
+			updated.ThresholdAction = strings.TrimSpace(*req.ThresholdAction)
+		}
+		if req.BillingResetDay != nil {
+			updated.BillingResetDay = *req.BillingResetDay
+		}
+
+		if err := validateNodeConfig(&updated); err != nil {
+			valErr = err
+			return nil, err
+		}
+
+		updated.ConfigRevision = existing.ConfigRevision + 1
+		return &updated, nil
+	})
+	if valErr != nil {
+		writeError(w, http.StatusBadRequest, valErr.Error())
+		return
+	}
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "node not found")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "failed to load node")
-		return
-	}
-
-	updated := *existing
-	if req.Name != nil {
-		updated.Name = strings.TrimSpace(*req.Name)
-	}
-	if req.RegionTag != nil {
-		updated.RegionTag = *req.RegionTag
-	}
-	if req.PublicIP != nil {
-		updated.PublicIP = *req.PublicIP
-	}
-	if req.PublicIPv6 != nil {
-		updated.PublicIPv6 = *req.PublicIPv6
-	}
-	if req.CustomEntryHost != nil {
-		updated.CustomEntryHost = *req.CustomEntryHost
-	}
-	if req.CustomEntryPort != nil {
-		updated.CustomEntryPort = *req.CustomEntryPort
-	}
-	if req.SortOrder != nil {
-		updated.SortOrder = *req.SortOrder
-	}
-	if req.Enabled != nil {
-		updated.Enabled = *req.Enabled
-	}
-	if req.SnellConfig != nil {
-		updated.SnellConfig = *req.SnellConfig
-		if updated.SnellConfig.Enabled && updated.SnellConfig.Version == "" {
-			updated.SnellConfig.Version = protocol.SnellVersionV5
-		}
-	}
-	if req.SSConfig != nil {
-		updated.SSConfig = *req.SSConfig
-		updated.SSConfig.Users = nil
-	}
-	if req.DNSUnlockEnabled != nil {
-		updated.DNSUnlockEnabled = *req.DNSUnlockEnabled
-	}
-	if req.DNSUnlockServer != nil {
-		updated.DNSUnlockServer = *req.DNSUnlockServer
-	}
-	if req.DNSRuleGroupID.set {
-		updated.DNSRuleGroupID = req.DNSRuleGroupID.value
-	}
-	if req.DNSExtraRules != nil {
-		if *req.DNSExtraRules == nil {
-			updated.DNSExtraRules = []string{}
-		} else {
-			updated.DNSExtraRules = *req.DNSExtraRules
-		}
-	}
-	if req.TrafficLimitBytes != nil {
-		updated.TrafficLimitBytes = *req.TrafficLimitBytes
-	}
-	if req.TrafficThresholdBytes != nil {
-		updated.TrafficThresholdBytes = *req.TrafficThresholdBytes
-	}
-	if req.TrafficCountMode != nil {
-		updated.TrafficCountMode = strings.TrimSpace(*req.TrafficCountMode)
-	}
-	if req.ThresholdAction != nil {
-		updated.ThresholdAction = strings.TrimSpace(*req.ThresholdAction)
-	}
-	if req.BillingResetDay != nil {
-		updated.BillingResetDay = *req.BillingResetDay
-	}
-
-	if err := validateNodeConfig(&updated); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	updated.ConfigRevision = existing.ConfigRevision + 1
-
-	if err := s.store.UpdateNode(r.Context(), &updated); err != nil {
 		switch {
 		case errors.Is(err, store.ErrNotFound):
 			writeError(w, http.StatusNotFound, "node not found")
@@ -514,13 +629,17 @@ func (s *server) handleUpdateNode(w http.ResponseWriter, r *http.Request, _ *aut
 	if err := s.hub.SyncNode(r.Context(), id); err != nil && !errors.Is(err, hub.ErrNodeOffline) && !errors.Is(err, hub.ErrHubClosed) {
 		s.logger.Warn("sync node after update failed", "node_id", id, "err", err)
 	}
-
-	latest, err := s.store.GetNodeByID(r.Context(), id)
-	if err != nil {
-		writeJSON(w, http.StatusOK, s.toNodeDTO(updated, ""))
-		return
+	if s.hub != nil {
+		s.hub.BroadcastPublicStatus()
 	}
-	writeJSON(w, http.StatusOK, s.toNodeDTO(*latest, ""))
+
+	respNode := *committed
+	if latest, err := s.store.GetNodeByID(r.Context(), id); err == nil {
+		if latest.ConfigRevision == committed.ConfigRevision || latest.IsTrafficPaused != committed.IsTrafficPaused {
+			respNode = *latest
+		}
+	}
+	writeJSON(w, http.StatusOK, s.toNodeDTO(respNode, ""))
 }
 
 func (s *server) handleDeleteNode(w http.ResponseWriter, r *http.Request, _ *auth.AdminClaims) {
@@ -608,6 +727,9 @@ func (s *server) handleResetNodeTraffic(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusInternalServerError, "failed to load updated node")
 		return
 	}
+	if s.hub != nil {
+		s.hub.BroadcastPublicStatus()
+	}
 	writeJSON(w, http.StatusOK, s.toNodeDTO(*latest, ""))
 }
 
@@ -656,6 +778,9 @@ func (s *server) handleCalibrateNodeTraffic(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load calibrated node")
 		return
+	}
+	if s.hub != nil {
+		s.hub.BroadcastPublicStatus()
 	}
 	writeJSON(w, http.StatusOK, s.toNodeDTO(*latest, ""))
 }
@@ -863,10 +988,62 @@ func (s *server) handleReorderNodes(w http.ResponseWriter, r *http.Request, _ *a
 		return
 	}
 
+	if s.hub != nil {
+		s.hub.BroadcastPublicStatus()
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": "ok",
 		"ids":    ids,
 	})
+}
+
+func hasControlChars(s string) bool {
+	for _, r := range s {
+		if unicode.IsControl(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func validateSTLSSNI(raw string) error {
+	if raw == "" {
+		return errors.New("stls_sni cannot be empty")
+	}
+	if hasControlChars(raw) || strings.IndexFunc(raw, unicode.IsSpace) != -1 || strings.ContainsAny(raw, ",=#;/?@\\") {
+		return fmt.Errorf("stls_sni %q contains invalid characters", raw)
+	}
+	if h, pStr, splitErr := net.SplitHostPort(raw); splitErr == nil {
+		if h == "" || strings.ContainsAny(h, "[]") {
+			return fmt.Errorf("invalid stls_sni host in %q", raw)
+		}
+		if strings.HasPrefix(raw, "[") && net.ParseIP(h) == nil {
+			return fmt.Errorf("invalid bracketed stls_sni %q: interior must be an IP address", raw)
+		}
+		if strings.Contains(h, ":") && net.ParseIP(h) == nil {
+			return fmt.Errorf("invalid stls_sni host in %q", raw)
+		}
+		p, err := strconv.Atoi(pStr)
+		if err != nil || p < 1 || p > 65535 {
+			return fmt.Errorf("invalid stls_sni port in %q: must be 1..65535", raw)
+		}
+		return nil
+	} else if !strings.Contains(splitErr.Error(), "missing port in address") {
+		return fmt.Errorf("invalid stls_sni %q: %w", raw, splitErr)
+	}
+	h := raw
+	if strings.HasPrefix(h, "[") && strings.HasSuffix(h, "]") {
+		inner := h[1 : len(h)-1]
+		if net.ParseIP(inner) == nil {
+			return fmt.Errorf("invalid bracketed stls_sni %q: interior must be an IP address", raw)
+		}
+		h = inner
+	}
+	if h == "" || strings.ContainsAny(h, "[]") || (strings.Contains(h, ":") && net.ParseIP(h) == nil) {
+		return fmt.Errorf("invalid stls_sni %q", raw)
+	}
+	return nil
 }
 
 func unionInt64(a, b []int64) []int64 {

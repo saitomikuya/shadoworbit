@@ -544,19 +544,10 @@ func (h *Hub) handleAgentMetrics(s *agentSession, env protocol.Envelope) {
 		userDeltas = copied
 	}
 
-	res, err := h.store.ApplyTrafficDeltasAt(s.ctx, s.nodeID, nicRx, nicTx, userDeltas, now)
-	if err != nil && !errors.Is(err, context.Canceled) && !s.superseded.Load() {
-		h.logger.Warn("hub: apply traffic deltas failed", "node_id", s.nodeID, "err", err)
-	}
-	if adminBytes := clampUint64ToInt64(m.AdminSnellBytes); adminBytes > 0 {
-		if err := h.store.RecordAdminSnellTraffic(s.ctx, s.nodeID, adminBytes, now); err != nil && !errors.Is(err, context.Canceled) && !s.superseded.Load() {
-			h.logger.Warn("hub: record admin snell traffic failed", "node_id", s.nodeID, "err", err)
-		}
-	}
-
+	adminBytes := clampUint64ToInt64(m.AdminSnellBytes)
 	coreAHealthy := m.Health.Snell && m.Health.ShadowTLS
 	coreBHealthy := m.Health.SingBox
-	if err := h.store.UpdateNodeTelemetry(s.ctx, s.nodeID, store.NodeTelemetryUpdate{
+	telUpd := store.NodeTelemetryUpdate{
 		CPUPercent:      m.CPUPercent,
 		MemUsedBytes:    m.MemUsedBytes,
 		MemTotalBytes:   m.MemTotalBytes,
@@ -567,8 +558,16 @@ func (h *Hub) handleAgentMetrics(s *agentSession, env protocol.Envelope) {
 		CoreAHealthy:    coreAHealthy,
 		CoreBHealthy:    coreBHealthy,
 		LastSeenAt:      now,
-	}); err != nil && !errors.Is(err, context.Canceled) && !s.superseded.Load() {
-		h.logger.Warn("hub: update node telemetry failed", "node_id", s.nodeID, "err", err)
+	}
+
+	res, err := h.store.ApplyAgentMetricsAt(s.ctx, s.nodeID, nicRx, nicTx, userDeltas, adminBytes, &telUpd, now)
+	if err != nil {
+		if !errors.Is(err, context.Canceled) && !s.superseded.Load() {
+			h.logger.Warn("hub: apply traffic deltas failed", "node_id", s.nodeID, "err", err)
+		}
+		if telErr := h.store.UpdateNodeTelemetry(s.ctx, s.nodeID, telUpd); telErr != nil && !errors.Is(telErr, context.Canceled) && !s.superseded.Load() {
+			h.logger.Warn("hub: update node telemetry failed", "node_id", s.nodeID, "err", telErr)
+		}
 	}
 
 	h.mu.Lock()

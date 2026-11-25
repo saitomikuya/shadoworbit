@@ -120,49 +120,72 @@ func (c *Collector) quarantineCorruptWALLocked(cause error) error {
 	return nil
 }
 
-func (c *Collector) addNICDelta(rxDelta, txDelta uint64) error {
-	if rxDelta == 0 && txDelta == 0 {
-		return nil
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	next := c.wal.clone()
-	next.NICRxDelta += rxDelta
-	next.NICTxDelta += txDelta
-	if err := writeWALAtomic(c.walPath, next); err != nil {
+func (c *Collector) commitWALWriteLocked(next walState, forceSync bool) error {
+	syncDisk := forceSync || c.walSyncInterval < 0 || c.lastWALSync.IsZero() || time.Since(c.lastWALSync) >= c.walSyncInterval
+	fsyncs, err := writeWALAtomicSync(c.walPath, next, syncDisk)
+	if err != nil {
 		return err
 	}
+	c.walWrites.Add(1)
+	if fsyncs > 0 {
+		c.walFsyncs.Add(int64(fsyncs))
+	}
 	c.wal = next
+	if syncDisk {
+		c.lastWALSync = time.Now()
+		c.walUnsynced = false
+	} else {
+		c.walUnsynced = true
+	}
 	return nil
 }
 
-func (c *Collector) addAdminSnellDelta(delta uint64) error {
-	if delta == 0 {
-		return nil
-	}
+// FlushWAL forces an fsync of the WAL file and its parent directory if there are unsynced writes.
+func (c *Collector) FlushWAL() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	next := c.wal.clone()
-	next.AdminSnellBytes += delta
-	if err := writeWALAtomic(c.walPath, next); err != nil {
-		return err
-	}
-	c.wal = next
-	return nil
-}
-
-func (c *Collector) addUserDeltas(deltas map[string]walUserDelta, activeUsers map[string]int64) error {
-	if len(deltas) == 0 {
+	if !c.walUnsynced {
 		return nil
 	}
+	return c.commitWALWriteLocked(c.wal.clone(), true)
+}
+
+// WALStats returns cumulative atomic WAL file write and fsync syscall counts.
+func (c *Collector) WALStats() (writes, fsyncs int64) {
+	return c.walWrites.Load(), c.walFsyncs.Load()
+}
+
+func (c *Collector) addCombinedDeltas(
+	rxDelta, txDelta, adminSnellDelta uint64,
+	userDeltas map[string]walUserDelta,
+	activeUsers map[string]int64,
+) error {
+	hasUsers := false
+	for uname, d := range userDeltas {
+		if uname != "" && (d.UpBytes > 0 || d.DownBytes > 0) {
+			hasUsers = true
+			break
+		}
+	}
+	if rxDelta == 0 && txDelta == 0 && adminSnellDelta == 0 && !hasUsers {
+		return nil
+	}
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	next := c.wal.clone()
 	changed := false
-	for uname, d := range deltas {
+	if rxDelta > 0 || txDelta > 0 {
+		next.NICRxDelta += rxDelta
+		next.NICTxDelta += txDelta
+		changed = true
+	}
+	if adminSnellDelta > 0 {
+		next.AdminSnellBytes += adminSnellDelta
+		changed = true
+	}
+	for uname, d := range userDeltas {
 		if uname == "" || (d.UpBytes == 0 && d.DownBytes == 0) {
 			continue
 		}
@@ -183,31 +206,49 @@ func (c *Collector) addUserDeltas(deltas map[string]walUserDelta, activeUsers ma
 	if !changed {
 		return nil
 	}
-	if err := writeWALAtomic(c.walPath, next); err != nil {
-		return err
-	}
-	c.wal = next
-	return nil
+	return c.commitWALWriteLocked(next, false)
+}
+
+func (c *Collector) addNICDelta(rxDelta, txDelta uint64) error {
+	return c.addCombinedDeltas(rxDelta, txDelta, 0, nil, nil)
+}
+
+func (c *Collector) addAdminSnellDelta(delta uint64) error {
+	return c.addCombinedDeltas(0, 0, delta, nil, nil)
+}
+
+func (c *Collector) addUserDeltas(deltas map[string]walUserDelta, activeUsers map[string]int64) error {
+	return c.addCombinedDeltas(0, 0, 0, deltas, activeUsers)
 }
 
 func writeWALAtomic(path string, st walState) error {
+	_, err := writeWALAtomicSync(path, st, true)
+	return err
+}
+
+func writeWALAtomicSync(path string, st walState, syncDisk bool) (int, error) {
 	st.normalize()
 	payload, err := json.Marshal(st)
 	if err != nil {
-		return fmt.Errorf("marshal WAL: %w", err)
+		return 0, fmt.Errorf("marshal WAL: %w", err)
 	}
-	return writeFileAtomic(path, payload)
+	return writeFileAtomicSync(path, payload, syncDisk)
 }
 
 func writeFileAtomic(path string, data []byte) error {
+	_, err := writeFileAtomicSync(path, data, true)
+	return err
+}
+
+func writeFileAtomicSync(path string, data []byte, syncDisk bool) (int, error) {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return fmt.Errorf("create WAL dir %q: %w", dir, err)
+		return 0, fmt.Errorf("create WAL dir %q: %w", dir, err)
 	}
 
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
-		return fmt.Errorf("create temp WAL file: %w", err)
+		return 0, fmt.Errorf("create temp WAL file: %w", err)
 	}
 	tmpName := tmp.Name()
 	cleanup := true
@@ -219,30 +260,38 @@ func writeFileAtomic(path string, data []byte) error {
 
 	if err := tmp.Chmod(0o640); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("chmod temp WAL file: %w", err)
+		return 0, fmt.Errorf("chmod temp WAL file: %w", err)
 	}
 	if _, err := tmp.Write(data); err != nil {
 		_ = tmp.Close()
-		return fmt.Errorf("write temp WAL file: %w", err)
+		return 0, fmt.Errorf("write temp WAL file: %w", err)
 	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("sync temp WAL file: %w", err)
+	fsyncs := 0
+	if syncDisk {
+		if err := tmp.Sync(); err != nil {
+			_ = tmp.Close()
+			return 0, fmt.Errorf("sync temp WAL file: %w", err)
+		}
+		fsyncs++
 	}
 	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp WAL file: %w", err)
+		return 0, fmt.Errorf("close temp WAL file: %w", err)
 	}
 	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("rename temp WAL file: %w", err)
+		return 0, fmt.Errorf("rename temp WAL file: %w", err)
 	}
 	cleanup = false
 
-	// Best-effort directory fsync for crash durability.
-	if d, err := os.Open(dir); err == nil {
-		_ = d.Sync()
-		_ = d.Close()
+	if syncDisk {
+		// Best-effort directory fsync for crash durability.
+		if d, err := os.Open(dir); err == nil {
+			if err := d.Sync(); err == nil {
+				fsyncs++
+			}
+			_ = d.Close()
+		}
 	}
-	return nil
+	return fsyncs, nil
 }
 
 func subClamped(cur, sub uint64) uint64 {

@@ -349,6 +349,23 @@ func (f *fakeSupervisorManager) ApplyConfig(ctx context.Context, cfg protocol.Se
 	return f.applyErr
 }
 
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 type fakeCollectorManager struct {
 	mu           sync.Mutex
 	usersCalls   [][]protocol.SSUserEntry
@@ -463,6 +480,34 @@ func TestConfigCoordinatorOrderingReconciliationRevisionsAndRollback(t *testing.
 		}
 		if len(events) != 3 || events[2].Event != protocol.EventConfigApplied || events[2].ConfigRevision != 2 {
 			t.Fatalf("expected config_applied event for rev 2, got %+v", events)
+		}
+	})
+
+	t.Run("cold boot rejects config_revision <= 0 with config_error without writing last_config", func(t *testing.T) {
+		for _, badRev := range []int64{0, -1} {
+			dataDir := t.TempDir()
+			var events []protocol.AgentEvent
+			dns := &fakeDNSManager{port: 1053}
+			sup := &fakeSupervisorManager{}
+			col := &fakeCollectorManager{}
+			initialDNS := dnsproxy.Config{ListenHost: "127.0.0.1", ListenPort: 1053, UpstreamDNS: dnsproxy.DefaultUpstreamDNS}
+			coord := newConfigCoordinator(dns, sup, col, func(ev protocol.AgentEvent) {
+				events = append(events, ev)
+			}, logger, initialDNS, 1053, 10085, dataDir)
+
+			err := coord.Apply(context.Background(), protocol.ServerConfigSync{ConfigRevision: badRev}, true)
+			if err == nil {
+				t.Fatalf("expected error on cold boot with config_revision=%d", badRev)
+			}
+			if coord.CurrentRevision() != 0 || len(sup.applyCalls) != 0 || len(dns.applyCalls) != 0 {
+				t.Fatalf("expected no apply side effects on bad rev %d: curRev=%d sup=%d dns=%d", badRev, coord.CurrentRevision(), len(sup.applyCalls), len(dns.applyCalls))
+			}
+			if len(events) != 1 || events[0].Event != protocol.EventConfigError || events[0].ConfigRevision != badRev || events[0].Status != protocol.EventStatusFailed {
+				t.Fatalf("expected EventConfigError for bad rev %d, got %+v", badRev, events)
+			}
+			if _, statErr := os.Stat(filepath.Join(dataDir, lastConfigFilename)); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("expected last_config.json not written, got err=%v", statErr)
+			}
 		}
 	})
 
@@ -740,7 +785,7 @@ func TestAgentOfflineAutonomyProcNetDevAndCleanShutdown(t *testing.T) {
 	ctx1, cancel1 := context.WithCancel(context.Background())
 	ready1 := make(chan struct{})
 	errCh1 := make(chan error, 1)
-	var out1 bytes.Buffer
+	var out1 syncBuffer
 	go func() {
 		errCh1 <- runWithOptions(ctx1, cfg, &out1, ready1, runtimeOptions{
 			PublicIPEndpointsV4: []string{},
@@ -841,7 +886,7 @@ func TestAgentOfflineAutonomyProcNetDevAndCleanShutdown(t *testing.T) {
 	defer cancel2()
 	ready2 := make(chan struct{})
 	errCh2 := make(chan error, 1)
-	var out2 bytes.Buffer
+	var out2 syncBuffer
 	go func() {
 		errCh2 <- runWithOptions(ctx2, cfg, &out2, ready2, runtimeOptions{
 			PublicIPEndpointsV4: []string{},
@@ -982,28 +1027,35 @@ func TestAgentBinarySIGTERMSignalShutdown(t *testing.T) {
 		"-local-dns-port", fmt.Sprintf("%d", dnsPort),
 		"-stats-port", fmt.Sprintf("%d", statsPort),
 	)
-	var stdout, stderr bytes.Buffer
+	var stdout, stderr syncBuffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start agent binary: %v", err)
 	}
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- cmd.Wait() }()
+	waitReaped := func() {
+		select {
+		case <-waitDone:
+		case <-time.After(3 * time.Second):
+		}
+	}
 
 	select {
 	case <-wsConnected:
 	case <-time.After(10 * time.Second):
 		_ = cmd.Process.Kill()
+		waitReaped()
 		t.Fatalf("agent binary failed to connect to WS; stdout=%s stderr=%s", stdout.String(), stderr.String())
 	}
 
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		_ = cmd.Process.Kill()
+		waitReaped()
 		t.Fatalf("send SIGTERM: %v", err)
 	}
-
-	waitDone := make(chan error, 1)
-	go func() { waitDone <- cmd.Wait() }()
 
 	select {
 	case err := <-waitDone:
@@ -1012,7 +1064,8 @@ func TestAgentBinarySIGTERMSignalShutdown(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		_ = cmd.Process.Kill()
-		t.Fatal("timed out waiting for agent binary SIGTERM exit")
+		waitReaped()
+		t.Fatalf("timed out waiting for agent binary SIGTERM exit; stdout=%s stderr=%s", stdout.String(), stderr.String())
 	}
 
 	select {
@@ -1693,7 +1746,7 @@ func TestConcurrentConfigSyncDuringKernelUpdateHealthWindow(t *testing.T) {
 	defer cancel()
 	ready := make(chan struct{})
 	errCh := make(chan error, 1)
-	var out bytes.Buffer
+	var out syncBuffer
 	go func() {
 		errCh <- runWithOptions(ctx, agentCfg, &out, ready, runtimeOptions{
 			PublicIPEndpointsV4: []string{},
@@ -1944,7 +1997,7 @@ exec %q -test.run=^TestSingBoxHelperProcess$ -- "$@"
 		defer cancel()
 		ready := make(chan struct{})
 		errCh := make(chan error, 1)
-		var out bytes.Buffer
+		var out syncBuffer
 		go func() {
 			errCh <- runWithOptions(ctx, agentCfg, &out, ready, runtimeOptions{
 				PublicIPEndpointsV4: []string{},
@@ -2356,7 +2409,7 @@ func TestRunWithOptionsEventConfigAppliedOrderingAndReconnect(t *testing.T) {
 	defer cancel()
 	ready := make(chan struct{})
 	errCh := make(chan error, 1)
-	var out bytes.Buffer
+	var out syncBuffer
 	go func() {
 		errCh <- runWithOptions(ctx, cfg, &out, ready, runtimeOptions{
 			PublicIPEndpointsV4: []string{},

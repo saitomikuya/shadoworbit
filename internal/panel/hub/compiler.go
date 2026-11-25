@@ -19,8 +19,46 @@ const (
 	defaultLocalDNSPort = 15353
 )
 
+type syncBuildCache struct {
+	upstreamDNS    string
+	localDNSPort   int
+	hasDNSSettings bool
+	dnsGroups      map[int64][]string
+}
+
+func (h *Hub) newSyncBuildCache(ctx context.Context) (*syncBuildCache, error) {
+	upstreamDNS, err := h.store.GetSettingOrDefault(ctx, "default_upstream_dns", defaultUpstreamDNS)
+	if err != nil {
+		return nil, err
+	}
+	upstreamDNS = strings.TrimSpace(upstreamDNS)
+	if upstreamDNS == "" {
+		upstreamDNS = defaultUpstreamDNS
+	}
+
+	localPortStr, err := h.store.GetSettingOrDefault(ctx, "default_local_dns_port", strconv.Itoa(defaultLocalDNSPort))
+	if err != nil {
+		return nil, err
+	}
+	localPort := defaultLocalDNSPort
+	if p, convErr := strconv.Atoi(strings.TrimSpace(localPortStr)); convErr == nil && p > 0 && p <= 65535 {
+		localPort = p
+	}
+
+	return &syncBuildCache{
+		upstreamDNS:    upstreamDNS,
+		localDNSPort:   localPort,
+		hasDNSSettings: true,
+		dnsGroups:      make(map[int64][]string),
+	}, nil
+}
+
 // BuildConfigSync compiles the full desired ServerConfigSync payload for nodeID.
 func (h *Hub) BuildConfigSync(ctx context.Context, nodeID int64) (protocol.ServerConfigSync, error) {
+	return h.buildConfigSyncWithCache(ctx, nodeID, nil)
+}
+
+func (h *Hub) buildConfigSyncWithCache(ctx context.Context, nodeID int64, cache *syncBuildCache) (protocol.ServerConfigSync, error) {
 	if h.store == nil {
 		return protocol.ServerConfigSync{}, errors.New("hub: nil store")
 	}
@@ -80,31 +118,56 @@ func (h *Hub) BuildConfigSync(ctx context.Context, nodeID int64) (protocol.Serve
 
 	var groupRules []string
 	if node.DNSRuleGroupID != nil && *node.DNSRuleGroupID > 0 {
-		grp, err := h.store.GetDNSRuleGroupByID(ctx, *node.DNSRuleGroupID)
-		if err == nil {
-			groupRules = grp.Rules
-		} else if !errors.Is(err, store.ErrNotFound) {
-			return protocol.ServerConfigSync{}, err
+		gid := *node.DNSRuleGroupID
+		if cache != nil && cache.dnsGroups != nil {
+			if cachedRules, ok := cache.dnsGroups[gid]; ok {
+				groupRules = cachedRules
+			} else {
+				grp, err := h.store.GetDNSRuleGroupByID(ctx, gid)
+				if err == nil {
+					groupRules = grp.Rules
+					cache.dnsGroups[gid] = grp.Rules
+				} else if errors.Is(err, store.ErrNotFound) {
+					cache.dnsGroups[gid] = nil
+				} else {
+					return protocol.ServerConfigSync{}, err
+				}
+			}
+		} else {
+			grp, err := h.store.GetDNSRuleGroupByID(ctx, gid)
+			if err == nil {
+				groupRules = grp.Rules
+			} else if !errors.Is(err, store.ErrNotFound) {
+				return protocol.ServerConfigSync{}, err
+			}
 		}
 	}
 	rules := mergeAndDedupDNSRules(groupRules, node.DNSExtraRules)
 
-	upstreamDNS, err := h.store.GetSettingOrDefault(ctx, "default_upstream_dns", defaultUpstreamDNS)
-	if err != nil {
-		return protocol.ServerConfigSync{}, err
-	}
-	upstreamDNS = strings.TrimSpace(upstreamDNS)
-	if upstreamDNS == "" {
-		upstreamDNS = defaultUpstreamDNS
-	}
+	var upstreamDNS string
+	var localPort int
+	if cache != nil && cache.hasDNSSettings {
+		upstreamDNS = cache.upstreamDNS
+		localPort = cache.localDNSPort
+	} else {
+		var err error
+		upstreamDNS, err = h.store.GetSettingOrDefault(ctx, "default_upstream_dns", defaultUpstreamDNS)
+		if err != nil {
+			return protocol.ServerConfigSync{}, err
+		}
+		upstreamDNS = strings.TrimSpace(upstreamDNS)
+		if upstreamDNS == "" {
+			upstreamDNS = defaultUpstreamDNS
+		}
 
-	localPortStr, err := h.store.GetSettingOrDefault(ctx, "default_local_dns_port", strconv.Itoa(defaultLocalDNSPort))
-	if err != nil {
-		return protocol.ServerConfigSync{}, err
-	}
-	localPort := defaultLocalDNSPort
-	if p, convErr := strconv.Atoi(strings.TrimSpace(localPortStr)); convErr == nil && p > 0 && p <= 65535 {
-		localPort = p
+		localPortStr, err := h.store.GetSettingOrDefault(ctx, "default_local_dns_port", strconv.Itoa(defaultLocalDNSPort))
+		if err != nil {
+			return protocol.ServerConfigSync{}, err
+		}
+		localPort = defaultLocalDNSPort
+		if p, convErr := strconv.Atoi(strings.TrimSpace(localPortStr)); convErr == nil && p > 0 && p <= 65535 {
+			localPort = p
+		}
 	}
 
 	return protocol.ServerConfigSync{
@@ -123,6 +186,10 @@ func (h *Hub) BuildConfigSync(ctx context.Context, nodeID int64) (protocol.Serve
 
 // SyncNode compiles and dispatches server.config_sync to an online node.
 func (h *Hub) SyncNode(ctx context.Context, nodeID int64) error {
+	return h.syncNodeWithCache(ctx, nodeID, nil)
+}
+
+func (h *Hub) syncNodeWithCache(ctx context.Context, nodeID int64, cache *syncBuildCache) error {
 	if h.isClosed() {
 		return ErrHubClosed
 	}
@@ -157,7 +224,7 @@ func (h *Hub) SyncNode(ctx context.Context, nodeID int64) error {
 			continue
 		}
 
-		cfg, err := h.BuildConfigSync(ctx, nodeID)
+		cfg, err := h.buildConfigSyncWithCache(ctx, nodeID, cache)
 		if err != nil {
 			sess.syncMu.Unlock()
 			return err
@@ -194,8 +261,19 @@ func (h *Hub) SyncNodesForUser(ctx context.Context, userID int64) error {
 	if err != nil {
 		return err
 	}
+
+	var cache *syncBuildCache
 	for _, nid := range nodeIDs {
-		if err := h.SyncNode(ctx, nid); err != nil && !errors.Is(err, ErrNodeOffline) {
+		if h.getSession(nid) == nil {
+			continue
+		}
+		if cache == nil {
+			cache, err = h.newSyncBuildCache(ctx)
+			if err != nil {
+				return err
+			}
+		}
+		if err := h.syncNodeWithCache(ctx, nid, cache); err != nil && !errors.Is(err, ErrNodeOffline) {
 			return err
 		}
 	}
@@ -218,8 +296,19 @@ func (h *Hub) SyncAll(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+
+	var cache *syncBuildCache
 	for _, n := range nodes {
-		if err := h.SyncNode(ctx, n.ID); err != nil && !errors.Is(err, ErrNodeOffline) {
+		if h.getSession(n.ID) == nil {
+			continue
+		}
+		if cache == nil {
+			cache, err = h.newSyncBuildCache(ctx)
+			if err != nil {
+				return err
+			}
+		}
+		if err := h.syncNodeWithCache(ctx, n.ID, cache); err != nil && !errors.Is(err, ErrNodeOffline) {
 			return err
 		}
 	}
