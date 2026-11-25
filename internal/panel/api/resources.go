@@ -882,6 +882,30 @@ func (s *server) handleListTrafficLogs(w http.ResponseWriter, r *http.Request, _
 		}
 		filter.NodeID = nid
 	}
+	if rawUserID := strings.TrimSpace(q.Get("user_id")); rawUserID != "" {
+		uid, err := strconv.ParseInt(rawUserID, 10, 64)
+		if err != nil || uid < 0 {
+			writeError(w, http.StatusBadRequest, "invalid user_id")
+			return
+		}
+		filter.UserID = &uid
+	}
+	if rawMerge := strings.TrimSpace(q.Get("merge")); rawMerge != "" {
+		merge, err := strconv.ParseBool(rawMerge)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid merge")
+			return
+		}
+		filter.Merge = merge
+	}
+	if rawGap := strings.TrimSpace(q.Get("merge_gap_minutes")); rawGap != "" {
+		gap, err := strconv.Atoi(rawGap)
+		if err != nil || gap < 1 || gap > store.MaxTrafficLogMergeGapMinutes {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid merge_gap_minutes: must be between 1 and %d", store.MaxTrafficLogMergeGapMinutes))
+			return
+		}
+		filter.MergeGapMinutes = gap
+	}
 
 	rawFrom := q.Get("from")
 	if strings.TrimSpace(rawFrom) == "" {

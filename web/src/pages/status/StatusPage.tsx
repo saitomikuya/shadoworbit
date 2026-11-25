@@ -27,7 +27,15 @@ import { formatBytes, formatSpeed, formatUptime } from '../../utils/format';
 type ViewMode = 'cards' | 'table';
 type WsState = 'connecting' | 'live' | 'reconnecting';
 
-function TrafficBar({ node, globalPercentageOnly }: { node: PublicNodeView; globalPercentageOnly: boolean }) {
+function TrafficBar({
+  node,
+  globalPercentageOnly,
+  compact = false,
+}: {
+  node: PublicNodeView;
+  globalPercentageOnly: boolean;
+  compact?: boolean;
+}) {
   const pctOnly = globalPercentageOnly || node.percentage_only;
   const unlimited = !pctOnly && node.traffic_limit_bytes === 0 && node.traffic_percent === 0;
   const thresholdOnly = !pctOnly && node.traffic_limit_bytes === 0 && node.traffic_percent > 0;
@@ -36,30 +44,30 @@ function TrafficBar({ node, globalPercentageOnly }: { node: PublicNodeView; glob
     pct >= 90 ? 'bg-rose-500' : pct >= 75 ? 'bg-amber-500' : 'bg-indigo-500 dark:bg-indigo-400';
 
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-center justify-between text-xs">
-        <span className="text-slate-500 dark:text-slate-400">周期流量</span>
+    <div className={compact ? 'space-y-1' : 'space-y-1.5'}>
+      <div className={`flex items-center justify-between gap-2 ${compact ? 'text-[11px]' : 'text-xs'}`}>
+        <span className="shrink-0 text-slate-500 dark:text-slate-400">周期流量</span>
         {pctOnly ? (
           <span className="font-mono font-semibold text-slate-800 dark:text-slate-200">
             {pct.toFixed(2)}%
           </span>
         ) : unlimited ? (
-          <span className="font-medium text-emerald-700 dark:text-emerald-400">
-            不限{node.traffic_used_bytes > 0 ? `（已用 ${formatBytes(node.traffic_used_bytes)}）` : ''}
+          <span className="truncate font-medium text-emerald-700 dark:text-emerald-400">
+            不限{node.traffic_used_bytes > 0 ? `（${formatBytes(node.traffic_used_bytes)}）` : ''}
           </span>
         ) : thresholdOnly ? (
-          <span className="font-mono text-slate-700 dark:text-slate-300">
+          <span className="truncate font-mono text-slate-700 dark:text-slate-300">
             {formatBytes(node.traffic_used_bytes)}{' '}
-            <span className="text-slate-400">（占阈值 {node.traffic_percent.toFixed(1)}%）</span>
+            <span className="text-slate-400">({node.traffic_percent.toFixed(1)}%)</span>
           </span>
         ) : (
-          <span className="font-mono text-slate-700 dark:text-slate-300">
+          <span className="truncate font-mono text-slate-700 dark:text-slate-300">
             {formatBytes(node.traffic_used_bytes)} / {formatBytes(node.traffic_limit_bytes)}{' '}
             <span className="text-slate-400">({pct.toFixed(1)}%)</span>
           </span>
         )}
       </div>
-      <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+      <div className={`${compact ? 'h-1.5' : 'h-2'} w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800`}>
         <div
           className={`h-full rounded-full transition-all duration-300 ${unlimited ? 'bg-emerald-500/40 w-full' : barColor}`}
           style={unlimited ? undefined : { width: `${pct}%` }}
@@ -367,7 +375,7 @@ export function StatusPage() {
             </p>
           </div>
         ) : viewMode === 'cards' ? (
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
             {nodes.map((node) => {
               const memPct =
                 node.mem_total_bytes > 0
@@ -375,22 +383,22 @@ export function StatusPage() {
                   : 0;
               const nodePctOnly = pctOnly || node.percentage_only;
               return (
-                <div key={node.id} className="card flex flex-col justify-between p-5">
-                  <div className="space-y-4">
-                    <div className="flex items-start justify-between gap-3">
+                <div key={node.id} className="card flex flex-col justify-between p-3.5">
+                  <div className="space-y-2.5">
+                    <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <h3 className="truncate text-base font-semibold text-slate-900 dark:text-white">
+                        <div className="flex items-center gap-1.5">
+                          <h3 className="truncate text-sm font-semibold text-slate-900 dark:text-white">
                             {node.name}
                           </h3>
                           {node.region_tag && (
-                            <span className="shrink-0 rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                            <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600 dark:bg-slate-800 dark:text-slate-300">
                               {node.region_tag}
                             </span>
                           )}
                         </div>
-                        <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500 dark:text-slate-400">
-                          <Clock className="h-3.5 w-3.5 shrink-0" />
+                        <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+                          <Clock className="h-3 w-3 shrink-0" />
                           <span>运行时长：{formatUptime(node.uptime_seconds)}</span>
                           <span>·</span>
                           <span>每月 {node.billing_reset_day} 日重置</span>
@@ -400,26 +408,26 @@ export function StatusPage() {
                     </div>
 
                     {node.status === 'traffic_paused' && (
-                      <div className="rounded-lg border border-amber-200 bg-amber-50/80 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200">
-                        <p className="font-medium">
-                          将于每月 {node.billing_reset_day} 日自动恢复
-                        </p>
-                        {node.paused_reason && <p className="mt-0.5 opacity-90">{formatPausedReason(node.paused_reason)}</p>}
+                      <div className="rounded-lg border border-amber-200 bg-amber-50/80 px-2.5 py-1.5 text-[11px] text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-200">
+                        <span className="font-medium">将于每月 {node.billing_reset_day} 日自动恢复</span>
+                        {node.paused_reason && (
+                          <span className="opacity-90"> · {formatPausedReason(node.paused_reason)}</span>
+                        )}
                       </div>
                     )}
 
                     {/* CPU & Memory */}
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="rounded-lg bg-slate-50 p-2.5 dark:bg-slate-800/60">
-                        <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="rounded-lg bg-slate-50 px-2.5 py-1.5 dark:bg-slate-800/60">
+                        <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
                           <span className="flex items-center gap-1">
-                            <Cpu className="h-3.5 w-3.5" /> CPU
+                            <Cpu className="h-3 w-3" /> CPU
                           </span>
                           <span className="font-mono font-semibold text-slate-800 dark:text-slate-200">
                             {node.cpu_percent.toFixed(1)}%
                           </span>
                         </div>
-                        <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
+                        <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
                           <div
                             className="h-full rounded-full bg-sky-500 transition-all"
                             style={{ width: `${Math.min(100, Math.max(0, node.cpu_percent))}%` }}
@@ -427,60 +435,65 @@ export function StatusPage() {
                         </div>
                       </div>
 
-                      <div className="rounded-lg bg-slate-50 p-2.5 dark:bg-slate-800/60">
-                        <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
+                      <div className="rounded-lg bg-slate-50 px-2.5 py-1.5 dark:bg-slate-800/60">
+                        <div className="flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
                           <span className="flex items-center gap-1">
-                            <MemoryStick className="h-3.5 w-3.5" /> 内存
+                            <MemoryStick className="h-3 w-3" /> 内存
                           </span>
                           <span className="font-mono font-semibold text-slate-800 dark:text-slate-200">
                             {memPct.toFixed(0)}%
                           </span>
                         </div>
-                        <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
+                        <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-slate-200 dark:bg-slate-700">
                           <div
                             className="h-full rounded-full bg-violet-500 transition-all"
                             style={{ width: `${memPct}%` }}
                           />
                         </div>
-                        <p className="mt-1 truncate text-[10px] font-mono text-slate-500 dark:text-slate-400">
+                        <p className="mt-0.5 truncate text-[10px] leading-tight font-mono text-slate-500 dark:text-slate-400">
                           {formatBytes(node.mem_used_bytes)} / {formatBytes(node.mem_total_bytes)}
                         </p>
                       </div>
                     </div>
 
-                    {/* Realtime Speed */}
-                    <div className="flex items-center justify-between rounded-lg border border-slate-100 px-3 py-2 text-xs dark:border-slate-800">
-                      <span className="flex items-center gap-1.5 font-mono text-emerald-600 dark:text-emerald-400">
-                        <ArrowDown className="h-3.5 w-3.5" />
-                        {formatSpeed(node.rx_bps)}
-                      </span>
-                      <span className="h-3 w-px bg-slate-200 dark:bg-slate-700" />
-                      <span className="flex items-center gap-1.5 font-mono text-indigo-600 dark:text-indigo-400">
-                        <ArrowUp className="h-3.5 w-3.5" />
-                        {formatSpeed(node.tx_bps)}
-                      </span>
+                    {/* Unified Compact Speed + Cumulative Traffic */}
+                    <div className="space-y-1 rounded-lg bg-slate-50 px-2.5 py-1.5 text-[11px] dark:bg-slate-800/50">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="shrink-0 text-slate-500 dark:text-slate-400">实时</span>
+                        <div className="flex min-w-0 items-center gap-2 font-mono">
+                          <span className="inline-flex items-center gap-0.5 text-emerald-600 dark:text-emerald-400">
+                            <ArrowDown className="h-3 w-3 shrink-0" />
+                            {formatSpeed(node.rx_bps)}
+                          </span>
+                          <span className="text-slate-300 dark:text-slate-600">/</span>
+                          <span className="inline-flex items-center gap-0.5 text-indigo-600 dark:text-indigo-400">
+                            <ArrowUp className="h-3 w-3 shrink-0" />
+                            {formatSpeed(node.tx_bps)}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="shrink-0 text-slate-500 dark:text-slate-400">累计</span>
+                        {nodePctOnly ? (
+                          <span className="text-slate-400">仅百分比模式</span>
+                        ) : (
+                          <div className="flex min-w-0 items-center gap-2 font-mono text-slate-700 dark:text-slate-200">
+                            <span>↓ {formatBytes(node.total_rx_bytes)}</span>
+                            <span className="text-slate-300 dark:text-slate-600">/</span>
+                            <span>↑ {formatBytes(node.total_tx_bytes)}</span>
+                          </div>
+                        )}
+                      </div>
                     </div>
 
-                    {/* Traffic */}
-                    <TrafficBar node={node} globalPercentageOnly={pctOnly} />
-
-                    {/* Cumulative Traffic */}
-                    <div className="flex flex-wrap items-center justify-between gap-1.5 rounded-lg bg-slate-50 px-3 py-2 text-xs dark:bg-slate-800/50">
-                      <span className="text-slate-500 dark:text-slate-400">累计总流量</span>
-                      {nodePctOnly ? (
-                        <span className="text-[11px] text-slate-400">仅百分比模式</span>
-                      ) : (
-                        <span className="font-mono text-slate-700 dark:text-slate-200">
-                          已下载 {formatBytes(node.total_rx_bytes)} · 已上传 {formatBytes(node.total_tx_bytes)}
-                        </span>
-                      )}
-                    </div>
+                    {/* Cycle Traffic */}
+                    <TrafficBar node={node} globalPercentageOnly={pctOnly} compact />
                   </div>
 
                   {/* Core Health */}
-                  <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3 dark:border-slate-800">
+                  <div className="mt-2.5 flex flex-wrap items-center justify-between gap-1.5 border-t border-slate-100 pt-2 dark:border-slate-800">
                     <span className="text-[11px] font-medium text-slate-400 dark:text-slate-500">
-                      代理核心状态
+                      代理核心
                     </span>
                     <div className="flex flex-wrap gap-1.5">
                       <HealthPill label="Snell + ShadowTLS" healthy={node.core_a_healthy} />

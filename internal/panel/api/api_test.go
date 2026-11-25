@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -745,10 +746,17 @@ func TestSubscriptionsAndForbiddenHeaders(t *testing.T) {
 	}
 	_ = json.Unmarshal(rawS, &settings)
 
-	// Admin sub valid
-	st, _, rawSub := env.do(http.MethodGet, "/s/admin/"+settings.AdminSubToken+"?mode=full", "", nil)
-	if st != http.StatusOK || !strings.HasPrefix(string(rawSub), "#!MANAGED-CONFIG ") || !strings.Contains(string(rawSub), "snell, 198.51.100.20, 2443") {
+	// Admin sub valid (legacy & named .conf alias routes)
+	st, hdrAdmin, rawSub := env.do(http.MethodGet, "/s/admin/"+settings.AdminSubToken+"?mode=full", "", nil)
+	if st != http.StatusOK || !strings.HasPrefix(string(rawSub), "#!MANAGED-CONFIG ") || !strings.Contains(string(rawSub), "/ShadowOrbit.conf ") || !strings.Contains(string(rawSub), "snell, 198.51.100.20, 2443") {
 		t.Fatalf("unexpected admin sub: st=%d body=%s", st, string(rawSub))
+	}
+	if cd := hdrAdmin.Get("Content-Disposition"); !strings.Contains(cd, `filename="ShadowOrbit.conf"`) {
+		t.Fatalf("expected Content-Disposition with ShadowOrbit.conf on admin sub, got %q", cd)
+	}
+	stAlias, hdrAlias, rawAlias := env.do(http.MethodGet, "/s/admin/"+settings.AdminSubToken+"/ShadowOrbit.conf?mode=full", "", nil)
+	if stAlias != http.StatusOK || !strings.HasPrefix(string(rawAlias), "#!MANAGED-CONFIG ") || !strings.Contains(hdrAlias.Get("Content-Disposition"), `filename="ShadowOrbit.conf"`) {
+		t.Fatalf("unexpected admin named alias sub: st=%d cd=%q", stAlias, hdrAlias.Get("Content-Disposition"))
 	}
 	// Invalid tpl -> 400; missing tpl -> 404; user token on admin track -> 401
 	st, _, _ = env.do(http.MethodGet, "/s/admin/"+settings.AdminSubToken+"?tpl=abc", "", nil)
@@ -764,10 +772,14 @@ func TestSubscriptionsAndForbiddenHeaders(t *testing.T) {
 		t.Fatalf("expected 401 for user token on admin track, got %d", st)
 	}
 
-	// User sub valid (Mihomo)
+	// User sub valid (Mihomo & Surge named alias route)
 	st, hdr, rawUserSub := env.do(http.MethodGet, "/s/u/"+user.SubToken+"?target=mihomo", "", nil)
-	if st != http.StatusOK || !strings.Contains(hdr.Get("Subscription-Userinfo"), "total=1000") || hdr.Get("Profile-Update-Interval") != "12" {
+	if st != http.StatusOK || !strings.Contains(hdr.Get("Subscription-Userinfo"), "total=1000") || hdr.Get("Profile-Update-Interval") != "12" || !strings.Contains(hdr.Get("Content-Disposition"), `filename="ShadowOrbit.yaml"`) {
 		t.Fatalf("unexpected user sub: st=%d hdr=%v body=%s", st, hdr, string(rawUserSub))
+	}
+	stUSurge, hdrUSurge, rawUSurge := env.do(http.MethodGet, "/s/u/"+user.SubToken+"/ShadowOrbit.conf?target=surge&mode=full", "", nil)
+	if stUSurge != http.StatusOK || !strings.Contains(string(rawUSurge), "/ShadowOrbit.conf?target=surge ") || !strings.Contains(hdrUSurge.Get("Content-Disposition"), `filename="ShadowOrbit.conf"`) {
+		t.Fatalf("unexpected user surge named alias: st=%d cd=%q body=%s", stUSurge, hdrUSurge.Get("Content-Disposition"), string(rawUSurge))
 	}
 
 	// Exhaust quota -> 403 MUST still include Subscription-Userinfo & Profile-Update-Interval!
@@ -2063,5 +2075,47 @@ func TestTrafficLogsAndDockerImageSettingsAPI(t *testing.T) {
 	_ = json.Unmarshal(rawAdminReset, &adminTrafficResp)
 	if adminTrafficResp.TotalBytes != 0 || len(adminTrafficResp.Items) != 0 {
 		t.Fatalf("expected admin traffic 0 after reset, got %+v", adminTrafficResp)
+	}
+
+	// Verify user_id filtering (including user_id=0 for Admin Snell) and merge=true session merging
+	tsMergeBase := time.Date(2026, 11, 25, 14, 0, 0, 0, time.UTC)
+	for _, m := range []int{0, 2, 4} {
+		if _, err := env.store.ApplyTrafficDeltasAt(ctx, createdNode.ID, 1, 1, []protocol.UserTrafficDelta{
+			{UserID: u.ID, UpBytes: 50, DownBytes: 150},
+		}, tsMergeBase.Add(time.Duration(m)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := env.store.RecordAdminSnellTraffic(ctx, createdNode.ID, 4096, tsMergeBase.Add(1*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	st, _, rawUserMerged := env.do(http.MethodGet, fmt.Sprintf("/api/v1/admin/traffic/logs?node_id=%d&user_id=%d&merge=true&from=%s&to=%s",
+		createdNode.ID, u.ID, url.QueryEscape("2026-11-25T14:00:00Z"), url.QueryEscape("2026-11-25T14:10:00Z")), env.jwt, nil)
+	if st != http.StatusOK {
+		t.Fatalf("GET merged traffic/logs failed: %d %s", st, string(rawUserMerged))
+	}
+	_ = json.Unmarshal(rawUserMerged, &logsResp)
+	if len(logsResp.Items) != 1 || logsResp.Items[0].StartTime != "2026-11-25T14:00:00Z" ||
+		logsResp.Items[0].EndTime != "2026-11-25T14:04:00Z" || logsResp.Items[0].RxBytes != 450 || logsResp.Items[0].TxBytes != 150 {
+		t.Fatalf("unexpected merged user logs response: %+v", logsResp.Items)
+	}
+
+	st, _, rawAdminLogs := env.do(http.MethodGet, fmt.Sprintf("/api/v1/admin/traffic/logs?node_id=%d&user_id=0&merge=true&from=%s&to=%s",
+		createdNode.ID, url.QueryEscape("2026-11-25T14:00:00Z"), url.QueryEscape("2026-11-25T14:10:00Z")), env.jwt, nil)
+	if st != http.StatusOK {
+		t.Fatalf("GET admin user_id=0 traffic/logs failed: %d %s", st, string(rawAdminLogs))
+	}
+	_ = json.Unmarshal(rawAdminLogs, &logsResp)
+	if len(logsResp.Items) != 1 || logsResp.Items[0].UserID != 0 || logsResp.Items[0].RxBytes != 4096 {
+		t.Fatalf("unexpected admin user_id=0 filtered logs: %+v", logsResp.Items)
+	}
+
+	// Reject invalid user_id / merge query params
+	if st, _, _ = env.do(http.MethodGet, "/api/v1/admin/traffic/logs?user_id=-1", env.jwt, nil); st != http.StatusBadRequest {
+		t.Fatalf("expected 400 on negative user_id, got %d", st)
+	}
+	if st, _, _ = env.do(http.MethodGet, "/api/v1/admin/traffic/logs?merge=invalid", env.jwt, nil); st != http.StatusBadRequest {
+		t.Fatalf("expected 400 on invalid merge, got %d", st)
 	}
 }

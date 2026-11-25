@@ -110,6 +110,7 @@ func (r *Renderer) RenderAdmin(ctx context.Context, token string, opts AdminRend
 
 	headers := make(http.Header)
 	headers.Set("Profile-Update-Interval", DefaultProfileUpdateInterval)
+	headers.Set("Content-Disposition", `attachment; filename="ShadowOrbit.conf"; filename*=UTF-8''ShadowOrbit.conf`)
 
 	if mode == ModeProxy {
 		body := strings.Join(proxyLines, "\n")
@@ -130,7 +131,7 @@ func (r *Renderer) RenderAdmin(ctx context.Context, token string, opts AdminRend
 		return nil, err
 	}
 
-	updateURL := baseURL + "/s/admin/" + token
+	updateURL := baseURL + "/s/admin/" + token + "/ShadowOrbit.conf"
 	if opts.TemplateID > 0 {
 		updateURL += fmt.Sprintf("?tpl=%d", opts.TemplateID)
 	}

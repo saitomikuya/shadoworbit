@@ -110,7 +110,9 @@ func (s *server) registerRoutes(mux *http.ServeMux) {
 
 	// Subscriptions
 	mux.HandleFunc("GET /s/admin/{token}", s.handleAdminSub)
+	mux.HandleFunc("GET /s/admin/{token}/{filename}", s.handleAdminSub)
 	mux.HandleFunc("GET /s/u/{token}", s.handleUserSub)
+	mux.HandleFunc("GET /s/u/{token}/{filename}", s.handleUserSub)
 
 	// Admin Nodes
 	mux.HandleFunc("GET /api/v1/admin/nodes", s.requireAdminJWT(s.handleListNodes))

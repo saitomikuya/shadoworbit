@@ -1789,3 +1789,93 @@ func TestTrafficUsageLogsMinuteAggregationAndRetention(t *testing.T) {
 		t.Fatalf("expected reset admin traffic to zero, got total=%d items=%+v err=%v", adminTotalAfter, adminItemsAfter, err)
 	}
 }
+
+func TestTrafficUsageLogsUserFilterAndMerge(t *testing.T) {
+	ctx := context.Background()
+	s := openTestStore(t)
+
+	n1 := &Node{Name: "Merge-Node-1", RegionTag: "SG", TokenHash: "hash_merge_n1", Enabled: true}
+	n2 := &Node{Name: "Merge-Node-2", RegionTag: "JP", TokenHash: "hash_merge_n2", Enabled: true}
+	if err := s.CreateNode(ctx, n1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateNode(ctx, n2); err != nil {
+		t.Fatal(err)
+	}
+
+	u1 := &User{
+		Username:        "merge_alice",
+		Enabled:         true,
+		SubToken:        "sub_merge_1",
+		SSUPSK16:        "AAAAAAAAAAAAAAAAAAAAAA==",
+		SSUPSK32:        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+		STLSPassword:    "pw",
+		BillingResetDay: 1,
+	}
+	if err := s.CreateUser(ctx, u1); err != nil {
+		t.Fatal(err)
+	}
+
+	// Session 1 for u1 on n1: 10:00, 10:02, 10:05 (gaps 2m and 3m <= 5m) -> should merge [10:00..10:05]
+	// Session 2 for u1 on n1: 10:15 (gap 10m > 5m) -> separate row [10:15..10:15]
+	// Different node (n2) for u1 at 10:01 -> must NOT merge with n1
+	// Admin Snell (user_id=0) on n1 at 10:01 -> must NOT merge with u1
+	base := time.Date(2026, 11, 25, 10, 0, 0, 0, time.UTC)
+	for _, offsetMin := range []int{0, 2, 5, 15} {
+		if _, err := s.ApplyTrafficDeltasAt(ctx, n1.ID, 10, 10, []protocol.UserTrafficDelta{
+			{UserID: u1.ID, UpBytes: 100, DownBytes: 200},
+		}, base.Add(time.Duration(offsetMin)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.ApplyTrafficDeltasAt(ctx, n2.ID, 10, 10, []protocol.UserTrafficDelta{
+		{UserID: u1.ID, UpBytes: 50, DownBytes: 60},
+	}, base.Add(1*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordAdminSnellTraffic(ctx, n1.ID, 777, base.Add(1*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Filter by user_id = 0 (Admin Snell)
+	var zero int64 = 0
+	adminRows, err := s.QueryTrafficUsageLogs(ctx, TrafficUsageLogFilter{UserID: &zero, Merge: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(adminRows) != 1 || adminRows[0].UserID != 0 || adminRows[0].Username != "管理员 (Snell)" || adminRows[0].RxBytes != 777 {
+		t.Fatalf("expected 1 admin Snell merged row, got %+v", adminRows)
+	}
+
+	// Filter by u1 + n1 + Merge:true -> 2 sessions ordered DESC by end_time
+	u1MergedN1, err := s.QueryTrafficUsageLogs(ctx, TrafficUsageLogFilter{
+		NodeID: n1.ID,
+		UserID: &u1.ID,
+		Merge:  true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(u1MergedN1) != 2 {
+		t.Fatalf("expected 2 merged sessions for u1 on n1, got %d (%+v)", len(u1MergedN1), u1MergedN1)
+	}
+	// Newest session first: [10:15..10:15]
+	if u1MergedN1[0].StartTime != "2026-11-25T10:15:00Z" || u1MergedN1[0].EndTime != "2026-11-25T10:15:00Z" ||
+		u1MergedN1[0].RxBytes != 200 || u1MergedN1[0].TxBytes != 100 {
+		t.Fatalf("unexpected newest merged session: %+v", u1MergedN1[0])
+	}
+	// Earlier continuous session: [10:00..10:05] with 3 buckets summed (600 RX, 300 TX)
+	if u1MergedN1[1].StartTime != "2026-11-25T10:00:00Z" || u1MergedN1[1].EndTime != "2026-11-25T10:05:00Z" ||
+		u1MergedN1[1].RxBytes != 600 || u1MergedN1[1].TxBytes != 300 {
+		t.Fatalf("unexpected continuous merged session: %+v", u1MergedN1[1])
+	}
+
+	// Filter all users & nodes merged -> 4 rows total (2 u1/n1, 1 u1/n2, 1 admin/n1)
+	allMerged, err := s.QueryTrafficUsageLogs(ctx, TrafficUsageLogFilter{Merge: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(allMerged) != 4 {
+		t.Fatalf("expected 4 total merged rows across nodes/users, got %d (%+v)", len(allMerged), allMerged)
+	}
+}

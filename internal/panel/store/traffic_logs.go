@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -14,9 +15,11 @@ import (
 )
 
 const (
-	DefaultTrafficLogMaxEntries = 10000
-	MinTrafficLogMaxEntries     = 100
-	MaxTrafficLogMaxEntries     = 1000000
+	DefaultTrafficLogMaxEntries      = 10000
+	MinTrafficLogMaxEntries          = 100
+	MaxTrafficLogMaxEntries          = 1000000
+	DefaultTrafficLogMergeGapMinutes = 5
+	MaxTrafficLogMergeGapMinutes     = 1440
 )
 
 // TrafficApplyResult summarizes the post-commit state after ApplyTrafficDeltas.
@@ -410,6 +413,7 @@ func (s *Store) PruneTrafficUsageLogs(ctx context.Context, maxEntries int) (int6
 }
 
 // QueryTrafficUsageLogs returns per-minute node+user traffic records sorted descending by time.
+// When filter.Merge is true, consecutive minutes for the same node and user within MergeGapMinutes are combined.
 func (s *Store) QueryTrafficUsageLogs(ctx context.Context, filter TrafficUsageLogFilter) ([]TrafficUsageLog, error) {
 	var (
 		clauses []string
@@ -418,6 +422,10 @@ func (s *Store) QueryTrafficUsageLogs(ctx context.Context, filter TrafficUsageLo
 	if filter.NodeID > 0 {
 		clauses = append(clauses, "l.node_id = ?")
 		args = append(args, filter.NodeID)
+	}
+	if filter.UserID != nil {
+		clauses = append(clauses, "l.user_id = ?")
+		args = append(args, *filter.UserID)
 	}
 	if filter.From != "" {
 		clauses = append(clauses, "l.log_minute >= ?")
@@ -428,12 +436,16 @@ func (s *Store) QueryTrafficUsageLogs(ctx context.Context, filter TrafficUsageLo
 		args = append(args, filter.To)
 	}
 
-	limit := filter.Limit
-	if limit <= 0 {
-		limit = 500
+	outLimit := filter.Limit
+	if outLimit <= 0 {
+		outLimit = 500
 	}
-	if limit > 5000 {
-		limit = 5000
+	if outLimit > 5000 {
+		outLimit = 5000
+	}
+	sqlLimit := outLimit
+	if filter.Merge {
+		sqlLimit = 5000
 	}
 
 	clauses = append(clauses, "(l.user_id = 0 OR u.id IS NOT NULL)")
@@ -447,7 +459,7 @@ LEFT JOIN users u ON u.id = l.user_id`
 		query += " WHERE " + strings.Join(clauses, " AND ")
 	}
 	query += " ORDER BY l.log_minute DESC, l.id DESC LIMIT ?"
-	args = append(args, limit)
+	args = append(args, sqlLimit)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -473,7 +485,102 @@ LEFT JOIN users u ON u.id = l.user_id`
 	if err := rows.Err(); err != nil {
 		return nil, mapSQLiteErr(err)
 	}
+	if filter.Merge {
+		return mergeTrafficUsageLogs(out, filter.MergeGapMinutes, outLimit), nil
+	}
 	return out, nil
+}
+
+func parseTrafficLogTime(raw string) (time.Time, bool) {
+	if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return t.UTC(), true
+	}
+	return time.Time{}, false
+}
+
+func mergeTrafficUsageLogs(rows []TrafficUsageLog, gapMinutes, outLimit int) []TrafficUsageLog {
+	if len(rows) == 0 {
+		return rows
+	}
+	if gapMinutes <= 0 {
+		gapMinutes = DefaultTrafficLogMergeGapMinutes
+	}
+	if gapMinutes > MaxTrafficLogMergeGapMinutes {
+		gapMinutes = MaxTrafficLogMergeGapMinutes
+	}
+	maxGap := time.Duration(gapMinutes) * time.Minute
+
+	type groupKey struct {
+		nodeID int64
+		userID int64
+	}
+	grouped := make(map[groupKey][]TrafficUsageLog)
+	for _, r := range rows {
+		k := groupKey{nodeID: r.NodeID, userID: r.UserID}
+		grouped[k] = append(grouped[k], r)
+	}
+
+	merged := make([]TrafficUsageLog, 0, len(rows))
+	for _, items := range grouped {
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].LogMinute != items[j].LogMinute {
+				return items[i].LogMinute < items[j].LogMinute
+			}
+			return items[i].ID < items[j].ID
+		})
+
+		cur := items[0]
+		cur.StartTime = cur.LogMinute
+		cur.EndTime = cur.LogMinute
+		curEndTime, curHasTime := parseTrafficLogTime(cur.EndTime)
+
+		for i := 1; i < len(items); i++ {
+			next := items[i]
+			nextTime, nextHasTime := parseTrafficLogTime(next.LogMinute)
+			shouldMerge := false
+			if curHasTime && nextHasTime {
+				diff := nextTime.Sub(curEndTime)
+				shouldMerge = diff >= 0 && diff <= maxGap
+			} else if next.LogMinute == cur.EndTime {
+				shouldMerge = true
+			}
+
+			if shouldMerge {
+				cur.RxBytes += next.RxBytes
+				cur.TxBytes += next.TxBytes
+				cur.EndTime = next.LogMinute
+				cur.LogMinute = next.LogMinute
+				cur.ID = next.ID
+				cur.UpdatedAt = next.UpdatedAt
+				if nextHasTime {
+					curEndTime = nextTime
+					curHasTime = true
+				}
+			} else {
+				merged = append(merged, cur)
+				cur = next
+				cur.StartTime = cur.LogMinute
+				cur.EndTime = cur.LogMinute
+				curEndTime, curHasTime = parseTrafficLogTime(cur.EndTime)
+			}
+		}
+		merged = append(merged, cur)
+	}
+
+	sort.Slice(merged, func(i, j int) bool {
+		if merged[i].EndTime != merged[j].EndTime {
+			return merged[i].EndTime > merged[j].EndTime
+		}
+		if merged[i].StartTime != merged[j].StartTime {
+			return merged[i].StartTime > merged[j].StartTime
+		}
+		return merged[i].ID > merged[j].ID
+	})
+
+	if outLimit > 0 && len(merged) > outLimit {
+		merged = merged[:outLimit]
+	}
+	return merged
 }
 
 // RecordAdminSnellTraffic atomically records Snell admin channel traffic for nodeID.

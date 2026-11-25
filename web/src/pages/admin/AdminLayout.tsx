@@ -140,21 +140,24 @@ export function AdminLayout() {
       </nav>
 
       <div className="border-t border-slate-200 p-3 dark:border-slate-800">
-        <Link
-          to="/"
+        <a
+          href="/"
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={() => setSidebarOpen(false)}
           className="flex items-center justify-between rounded-lg px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
         >
           <span>公开状态页</span>
           <ExternalLink className="h-3.5 w-3.5" />
-        </Link>
+        </a>
       </div>
     </div>
   );
 
   return (
     <div className="flex min-h-screen overflow-x-hidden bg-slate-50 dark:bg-slate-950">
-      {/* Desktop Sidebar */}
-      <aside className="hidden w-60 shrink-0 border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 lg:block">
+      {/* Desktop Sidebar (fixed so footer links stay anchored at bottom-left on long pages) */}
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-60 border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 lg:block">
         {navContent}
       </aside>
 
@@ -162,14 +165,14 @@ export function AdminLayout() {
       {sidebarOpen && (
         <div className="fixed inset-0 z-40 flex lg:hidden">
           <div className="fixed inset-0 bg-slate-950/60" onClick={() => setSidebarOpen(false)} />
-          <aside className="relative z-10 w-64 max-w-[80vw] bg-white shadow-xl dark:bg-slate-900">
+          <aside className="relative z-10 h-full w-64 max-w-[80vw] bg-white shadow-xl dark:bg-slate-900">
             {navContent}
           </aside>
         </div>
       )}
 
       {/* Main Content */}
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-w-0 flex-1 flex-col lg:pl-60">
         <header className="sticky top-0 z-20 flex h-14 items-center justify-between gap-2 border-b border-slate-200 bg-white/85 px-3 backdrop-blur dark:border-slate-800 dark:bg-slate-900/85 sm:px-6">
           <div className="flex min-w-0 items-center gap-2.5 sm:gap-3">
             <button

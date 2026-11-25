@@ -1325,7 +1325,7 @@ func TestTier4_Scenario11_DeploymentDockerCIRunbookConsistency(t *testing.T) {
 
 	// Dockerfile.agent multi-arch + tini + 3 kernels + /var/lib/snell-panel-agent
 	aLower := strings.ToLower(t4_stripDockerfileComments(agentDF))
-	for _, req := range []string{"golang", "1.24", "cgo_enabled=0", "./cmd/agent", "tini", "snell-server", "shadow-tls", "sing-box", "/var/lib/snell-panel-agent"} {
+	for _, req := range []string{"golang", "1.26", "cgo_enabled=0", "./cmd/agent", "tini", "snell-server", "shadow-tls", "sing-box", "/var/lib/snell-panel-agent"} {
 		if !strings.Contains(aLower, req) {
 			t.Fatalf("deploy/Dockerfile.agent missing %q", req)
 		}

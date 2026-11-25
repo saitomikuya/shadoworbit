@@ -17,8 +17,8 @@
 - **移动端适配**：公开状态页与管理后台（`/admin/*`）针对手机与桌面端做了完整响应式布局与侧滑抽屉导航，小屏下自动切换卡片视图。
 
 ### 3. 双轨订阅与 CDN 加速机场规则模板
-- **管理员专属 Surge 订阅（`GET /s/admin/<admin_sub_token>`）**：仅输出已启用的 `Snell + ShadowTLS v3` 节点；支持在「用户与订阅管理」页通过弹窗可视化配置、一键预览输出并再次点击收起预览。`threshold_action=stop_ss_only` 时保留管理员通道不断线。
-- **多用户 SS2022 订阅（`GET /s/u/<user_sub_token>`）**：自动依据节点加密套件匹配对应 16/32 字节 Base64 `uPSK`，支持 `?target=mihomo|surge|shadowrocket&mode=full|proxy&tpl=<id>`，缺省时按 `User-Agent` 自动识别客户端，并输出标准 `Subscription-Userinfo` 与 `Profile-Update-Interval` 响应头。
+- **管理员专属 Surge 订阅（`GET /s/admin/<admin_sub_token>/ShadowOrbit.conf`，兼容旧路径）**：仅输出已启用的 `Snell + ShadowTLS v3` 节点；支持在「用户与订阅管理」页通过弹窗可视化配置、一键预览输出并再次点击收起预览。`threshold_action=stop_ss_only` 时保留管理员通道不断线；Surge 默认以 `ShadowOrbit`（`ShadowOrbit.conf`）命名托管配置。
+- **多用户 SS2022 订阅（`GET /s/u/<user_sub_token>/ShadowOrbit.{conf|yaml|txt}`）**：自动依据节点加密套件匹配对应 16/32 字节 Base64 `uPSK`，支持 `?target=mihomo|surge|shadowrocket&mode=full|proxy&tpl=<id>`，缺省时按 `User-Agent` 自动识别客户端，并输出标准 `Content-Disposition`、`Subscription-Userinfo` 与 `Profile-Update-Interval` 响应头。
 - **CDN 规则集与 Surge 规则兼容**：内置机场常用分流规则模板（AI 服务、国际媒体、TikTok、Spotify、Telegram、Apple、Google、广告拦截等），默认采用 `fastly.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/` 镜像加速规则集拉取，避免国内首次导入超时，且不包含 Surge 禁止声明的内置策略名冲突项。
 
 ### 4. 内置 DNS 解锁分流器
@@ -29,7 +29,7 @@
 ### 5. 精细化流量统计、日志上限与自动清零
 - **节点物理流量**：节点端每 5 秒采集宿主网卡 `/proc/net/dev`（支持 `IFACE` 手动指定及重启计数器回绕保护）。
 - **多用户与管理员渠道流量**：每 10 秒通过 `sing-box` gRPC `StatsService/QueryStats` 采集用户明细流量，并通过 `/proc/<pid>/io` 采集管理员 `snell-server` 渠道流量；断连期间缓存至本地 WAL（`pending_traffic.json`）并在重连后补报。
-- **节点 × 用户联动看板与分钟级明细**：支持点击任意用户或管理员已用流量查看按节点降序分布明细；流量日志按分钟粒度记录节点与用户对应消耗，并支持在设置或流量页配置日志保存上限（默认 `10000` 条）。
+- **节点 × 用户联动看板与时段合并明细**：支持点击任意用户或管理员已用流量查看按节点降序分布明细；流量日志按分钟粒度记录节点与用户对应消耗，展示时自动将同一节点同一用户连续时段（间隔 ≤ 5 分钟）合并为单行起止时间，可在「系统设置」页统一配置日志保存上限（默认 `10000` 条）。
 - **计费统计与周期重置**：支持 `both`、`tx_only`、`rx_only`、`max_dir` 四种计数方式与 `stop_all` / `stop_ss_only` 超限策略；支持按月设置结算日（`1..31`，自动适配 2 月等短月）并在本地 `00:00` 自动清零恢复。
 
 ### 6. 通知告警、内核中心与镜像自定义
@@ -220,7 +220,7 @@ services:
    - 在「用户与订阅管理」顶部固定卡片/行中管理管理员自身的 Snell 订阅配置、折叠预览与流量分布；下方列表创建普通用户并勾选允许访问的节点。
    - 点击用户行或管理员行中的已用流量，可弹窗查看按流量从高到低排序的各节点分摊详情。
 4. **流量明细与排障**：
-   - 在「流量统计」页按节点筛选，直接在同一行查看分钟级时间点、节点名、对应用户（含管理员 Snell 渠道）及上下行字节数。
+   - 在「流量统计」页按节点与用户（含管理员 Snell）组合筛选，同一行查看连续使用起止时间、节点名、对应用户及上下行流量。
 5. **内核版本升级**：
    - 在「内核中心」同步上游发布版本号或录入自定义 `snell-server` 下载地址，选择目标节点一键热升级并支持失败自动回滚。
 

@@ -317,9 +317,12 @@ func TestRenderAdminNodeFilteringAndFormatting(t *testing.T) {
 		t.Fatalf("expected NodeCount=3, got %d", resFull.NodeCount)
 	}
 	fullLines := strings.Split(resFull.Body, "\n")
-	wantHeader := fmt.Sprintf("#!MANAGED-CONFIG https://panel.example.com/s/admin/%s interval=43200 strict=false", adminToken)
+	wantHeader := fmt.Sprintf("#!MANAGED-CONFIG https://panel.example.com/s/admin/%s/ShadowOrbit.conf interval=43200 strict=false", adminToken)
 	if fullLines[0] != wantHeader {
 		t.Fatalf("line 1 mismatch:\ngot:  %s\nwant: %s", fullLines[0], wantHeader)
+	}
+	if cd := resFull.Headers.Get("Content-Disposition"); !strings.Contains(cd, `filename="ShadowOrbit.conf"`) {
+		t.Fatalf("expected Content-Disposition with ShadowOrbit.conf, got %q", cd)
 	}
 	if !strings.Contains(resFull.Body, "🚀 节点选择 = select, ♻️ 自动选择, 🔯 故障转移, US- Node-2, 🇭🇰 香港 01, US- Node-2 (2), DIRECT") {
 		t.Fatalf("missing expected 🚀 节点选择 group line in:\n%s", resFull.Body)
@@ -383,7 +386,7 @@ func TestRenderAdminTemplatesAndZeroNodes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderAdmin(customNoHeader) failed: %v", err)
 	}
-	wantLine1 := fmt.Sprintf("#!MANAGED-CONFIG https://panel.example.com/s/admin/%s?tpl=%d interval=43200 strict=false", adminToken, customNoHeader.ID)
+	wantLine1 := fmt.Sprintf("#!MANAGED-CONFIG https://panel.example.com/s/admin/%s/ShadowOrbit.conf?tpl=%d interval=43200 strict=false", adminToken, customNoHeader.ID)
 	if !strings.HasPrefix(resCustom1.Body, wantLine1+"\n[General]\n") {
 		t.Fatalf("expected line 1 prepended with ?tpl=%d, got:\n%s", customNoHeader.ID, resCustom1.Body)
 	}
@@ -408,7 +411,7 @@ func TestRenderAdminTemplatesAndZeroNodes(t *testing.T) {
 	if strings.Contains(resCustom2.Body, "old.example.com") {
 		t.Fatalf("stale #!MANAGED-CONFIG header was not replaced:\n%s", resCustom2.Body)
 	}
-	wantLine1Stale := fmt.Sprintf("#!MANAGED-CONFIG https://new.example.com/s/admin/%s?tpl=%d interval=43200 strict=false", adminToken, customStaleHeader.ID)
+	wantLine1Stale := fmt.Sprintf("#!MANAGED-CONFIG https://new.example.com/s/admin/%s/ShadowOrbit.conf?tpl=%d interval=43200 strict=false", adminToken, customStaleHeader.ID)
 	if !strings.HasPrefix(resCustom2.Body, wantLine1Stale+"\n[General]\n") {
 		t.Fatalf("expected line 1 replaced, got:\n%s", resCustom2.Body)
 	}
@@ -740,6 +743,9 @@ func TestRenderUserTargetsAndZeroSnellLeakage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderUser(mihomo, full) failed: %v", err)
 	}
+	if cd := resMihomoFull.Headers.Get("Content-Disposition"); !strings.Contains(cd, `filename="ShadowOrbit.yaml"`) {
+		t.Fatalf("expected Content-Disposition with ShadowOrbit.yaml, got %q", cd)
+	}
 	assertZeroSnell(t, resMihomoFull.Body)
 	var parsedFull struct {
 		Proxies     []mihomoProxy `yaml:"proxies"`
@@ -799,15 +805,21 @@ func TestRenderUserTargetsAndZeroSnellLeakage(t *testing.T) {
 		t.Fatalf("RenderUser(surge, full) failed: %v", err)
 	}
 	assertZeroSnell(t, resSurgeFull.Body)
-	wantSurgeLine1 := fmt.Sprintf("#!MANAGED-CONFIG https://panel.example.com/s/u/%s?target=surge interval=43200 strict=false", user.SubToken)
+	wantSurgeLine1 := fmt.Sprintf("#!MANAGED-CONFIG https://panel.example.com/s/u/%s/ShadowOrbit.conf?target=surge interval=43200 strict=false", user.SubToken)
 	if !strings.HasPrefix(resSurgeFull.Body, wantSurgeLine1+"\n") {
 		t.Fatalf("expected Surge user line 1 %q, got:\n%s", wantSurgeLine1, resSurgeFull.Body)
+	}
+	if cd := resSurgeFull.Headers.Get("Content-Disposition"); !strings.Contains(cd, `filename="ShadowOrbit.conf"`) {
+		t.Fatalf("expected user Surge Content-Disposition with ShadowOrbit.conf, got %q", cd)
 	}
 
 	// 3. Shadowrocket Base64 URI verification
 	resRocket, err := r.RenderUser(ctx, user.SubToken, "Shadowrocket/2.2", UserRenderOptions{})
 	if err != nil {
 		t.Fatalf("RenderUser(shadowrocket) failed: %v", err)
+	}
+	if cd := resRocket.Headers.Get("Content-Disposition"); !strings.Contains(cd, `filename="ShadowOrbit.txt"`) {
+		t.Fatalf("expected Shadowrocket Content-Disposition with ShadowOrbit.txt, got %q", cd)
 	}
 	if resRocket.NodeCount != 2 || resRocket.ContentType != "text/plain; charset=utf-8" {
 		t.Fatalf("unexpected shadowrocket metadata: count=%d ct=%q", resRocket.NodeCount, resRocket.ContentType)
@@ -1163,7 +1175,7 @@ func TestRenderEdgeCasesAndCustomTemplates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderUser(surge, full, tpl) failed: %v", err)
 	}
-	wantSurgeHeader := fmt.Sprintf("#!MANAGED-CONFIG https://panel.example.com/s/u/%s?target=surge&tpl=%d interval=43200 strict=false", user.SubToken, customSurgeUser.ID)
+	wantSurgeHeader := fmt.Sprintf("#!MANAGED-CONFIG https://panel.example.com/s/u/%s/ShadowOrbit.conf?target=surge&tpl=%d interval=43200 strict=false", user.SubToken, customSurgeUser.ID)
 	if !strings.HasPrefix(resSurgeFull.Body, wantSurgeHeader+"\n") {
 		t.Fatalf("expected header %q, got:\n%s", wantSurgeHeader, resSurgeFull.Body)
 	}
@@ -1266,7 +1278,7 @@ func TestRegressionBaseURLValidation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("RenderAdmin(%q) unexpected error: %v", tc.raw, err)
 		}
-		wantPrefix := fmt.Sprintf("#!MANAGED-CONFIG %s/s/admin/%s interval=43200 strict=false\n", tc.want, adminToken)
+		wantPrefix := fmt.Sprintf("#!MANAGED-CONFIG %s/s/admin/%s/ShadowOrbit.conf interval=43200 strict=false\n", tc.want, adminToken)
 		if !strings.HasPrefix(res.Body, wantPrefix) {
 			t.Fatalf("RenderAdmin(%q) expected prefix %q, got:\n%s", tc.raw, wantPrefix, res.Body)
 		}
@@ -1347,7 +1359,7 @@ func TestRegressionManagedConfigWhitespaceAndDeduplication(t *testing.T) {
 					t.Fatalf("RenderAdmin failed: %v", err)
 				}
 				body = res.Body
-				wantHeader = fmt.Sprintf("#!MANAGED-CONFIG https://new.example.com/s/admin/%s?tpl=%d interval=43200 strict=false", adminToken, tpl.ID)
+				wantHeader = fmt.Sprintf("#!MANAGED-CONFIG https://new.example.com/s/admin/%s/ShadowOrbit.conf?tpl=%d interval=43200 strict=false", adminToken, tpl.ID)
 			} else {
 				res, err := r.RenderUser(ctx, user.SubToken, "", UserRenderOptions{
 					Target:     protocol.SubTargetSurge,
@@ -1359,7 +1371,7 @@ func TestRegressionManagedConfigWhitespaceAndDeduplication(t *testing.T) {
 					t.Fatalf("RenderUser failed: %v", err)
 				}
 				body = res.Body
-				wantHeader = fmt.Sprintf("#!MANAGED-CONFIG https://new.example.com/s/u/%s?target=surge&tpl=%d interval=43200 strict=false", user.SubToken, tpl.ID)
+				wantHeader = fmt.Sprintf("#!MANAGED-CONFIG https://new.example.com/s/u/%s/ShadowOrbit.conf?target=surge&tpl=%d interval=43200 strict=false", user.SubToken, tpl.ID)
 			}
 
 			if strings.Contains(body, "\r") {

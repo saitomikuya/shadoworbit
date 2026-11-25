@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -196,6 +197,7 @@ func filterUserNodes(nodes []store.Node, user *store.User) []userNodeEntry {
 }
 
 func (r *Renderer) renderUserMihomo(ctx context.Context, entries []userNodeEntry, mode string, templateID int64, headers map[string][]string) (*RenderResult, error) {
+	http.Header(headers).Set("Content-Disposition", `attachment; filename="ShadowOrbit.yaml"; filename*=UTF-8''ShadowOrbit.yaml`)
 	usedNames := make(map[string]int, len(entries))
 	proxies := make([]mihomoProxy, 0, len(entries))
 	proxyNames := make([]string, 0, len(entries))
@@ -481,6 +483,7 @@ func collapseConsecutiveYAMLDirect(lines []string) []string {
 }
 
 func (r *Renderer) renderUserSurge(ctx context.Context, token string, entries []userNodeEntry, mode string, templateID int64, baseURL string, headers map[string][]string) (*RenderResult, error) {
+	http.Header(headers).Set("Content-Disposition", `attachment; filename="ShadowOrbit.conf"; filename*=UTF-8''ShadowOrbit.conf`)
 	usedNames := make(map[string]int, len(entries))
 	proxyLines := make([]string, 0, len(entries))
 	proxyNames := make([]string, 0, len(entries))
@@ -517,7 +520,7 @@ func (r *Renderer) renderUserSurge(ctx context.Context, token string, entries []
 		return nil, err
 	}
 
-	updateURL := baseURL + "/s/u/" + token + "?target=surge"
+	updateURL := baseURL + "/s/u/" + token + "/ShadowOrbit.conf?target=surge"
 	if templateID > 0 {
 		updateURL += fmt.Sprintf("&tpl=%d", templateID)
 	}
@@ -534,6 +537,7 @@ func (r *Renderer) renderUserSurge(ctx context.Context, token string, entries []
 }
 
 func renderUserShadowrocket(entries []userNodeEntry, headers map[string][]string) (*RenderResult, error) {
+	http.Header(headers).Set("Content-Disposition", `attachment; filename="ShadowOrbit.txt"; filename*=UTF-8''ShadowOrbit.txt`)
 	usedNames := make(map[string]int, len(entries))
 	uris := make([]string, 0, len(entries))
 

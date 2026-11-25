@@ -409,6 +409,8 @@ export interface TrafficUsageLog {
   user_id: number;
   username: string;
   log_minute: string;
+  start_time?: string;
+  end_time?: string;
   rx_bytes: number;
   tx_bytes: number;
   updated_at: string;
@@ -422,9 +424,12 @@ export interface TrafficUsageLogsResponse {
 
 export interface TrafficUsageLogQuery {
   node_id?: number;
+  user_id?: number;
   from?: string;
   to?: string;
   limit?: number;
+  merge?: boolean;
+  merge_gap_minutes?: number;
 }
 
 export interface SystemSettings {

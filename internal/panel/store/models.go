@@ -141,6 +141,8 @@ type TrafficUsageLog struct {
 	UserID    int64  `json:"user_id"`
 	Username  string `json:"username"`
 	LogMinute string `json:"log_minute"`
+	StartTime string `json:"start_time,omitempty"`
+	EndTime   string `json:"end_time,omitempty"`
 	RxBytes   int64  `json:"rx_bytes"`
 	TxBytes   int64  `json:"tx_bytes"`
 	UpdatedAt string `json:"updated_at"`
@@ -148,10 +150,13 @@ type TrafficUsageLog struct {
 
 // TrafficUsageLogFilter filters QueryTrafficUsageLogs results.
 type TrafficUsageLogFilter struct {
-	NodeID int64
-	From   string
-	To     string
-	Limit  int
+	NodeID          int64
+	UserID          *int64
+	From            string
+	To              string
+	Limit           int
+	Merge           bool
+	MergeGapMinutes int
 }
 
 // UserNodeTrafficEntry represents cumulative traffic recorded for a user on one node.

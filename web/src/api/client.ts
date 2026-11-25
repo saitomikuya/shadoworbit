@@ -163,7 +163,7 @@ export function buildAdminSubUrl(
   if (tplId && tplId > 0) {
     params.set('tpl', String(tplId));
   }
-  return `${window.location.origin}/s/admin/${encodeURIComponent(adminSubToken)}?${params.toString()}`;
+  return `${window.location.origin}/s/admin/${encodeURIComponent(adminSubToken)}/ShadowOrbit.conf?${params.toString()}`;
 }
 
 export function buildUserSubUrl(
@@ -180,7 +180,13 @@ export function buildUserSubUrl(
       params.set('tpl', String(tplId));
     }
   }
-  return `${window.location.origin}/s/u/${encodeURIComponent(subToken)}?${params.toString()}`;
+  const filename =
+    target === 'surge'
+      ? 'ShadowOrbit.conf'
+      : target === 'mihomo'
+        ? 'ShadowOrbit.yaml'
+        : 'ShadowOrbit.txt';
+  return `${window.location.origin}/s/u/${encodeURIComponent(subToken)}/${filename}?${params.toString()}`;
 }
 
 export const api = {
@@ -324,9 +330,14 @@ export const api = {
   getTrafficLogs: (query: TrafficUsageLogQuery) => {
     const params = new URLSearchParams();
     if (query.node_id && query.node_id > 0) params.set('node_id', String(query.node_id));
+    if (query.user_id !== undefined && query.user_id >= 0) params.set('user_id', String(query.user_id));
     if (query.from) params.set('from', query.from);
     if (query.to) params.set('to', query.to);
     if (query.limit && query.limit > 0) params.set('limit', String(query.limit));
+    if (query.merge !== undefined) params.set('merge', String(query.merge));
+    if (query.merge_gap_minutes && query.merge_gap_minutes > 0) {
+      params.set('merge_gap_minutes', String(query.merge_gap_minutes));
+    }
     const qs = params.toString();
     return request<TrafficUsageLogsResponse>(`/api/v1/admin/traffic/logs${qs ? `?${qs}` : ''}`);
   },

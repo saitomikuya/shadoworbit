@@ -293,7 +293,7 @@ func TestF19_Tier1_DockerfileAgentMultiArchTiniAnd3Kernels(t *testing.T) {
 	lower := strings.ToLower(f19_stripDockerfileComments(df))
 
 	for _, req := range []string{
-		"golang", "1.24", "cgo_enabled=0", "./cmd/agent",
+		"golang", "1.26", "cgo_enabled=0", "./cmd/agent",
 		"tini", "ca-certificates",
 		"snell-server", "shadow-tls", "sing-box",
 		"/var/lib/snell-panel-agent",
