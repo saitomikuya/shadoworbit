@@ -92,6 +92,7 @@ type SSConfig struct {
 	Cipher  string        `json:"cipher"`
 	IPSK    string        `json:"ipsk"`
 	STLSSNI string        `json:"stls_sni"`
+	TFO     bool          `json:"tfo"`
 	Users   []SSUserEntry `json:"users"`
 }
 

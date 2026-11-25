@@ -96,6 +96,7 @@ export interface SSConfig {
   cipher: SSCipher | '';
   ipsk: string;
   stls_sni: string;
+  tfo: boolean;
   users?: null;
 }
 

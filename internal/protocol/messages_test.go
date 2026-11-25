@@ -77,7 +77,7 @@ func TestMessageWireJSONKeys(t *testing.T) {
 	)
 
 	ssMap := syncMap["ss"].(map[string]any)
-	assertHasKeys(t, ssMap, "enabled", "tcp_port", "udp_port", "cipher", "ipsk", "stls_sni", "users")
+	assertHasKeys(t, ssMap, "enabled", "tcp_port", "udp_port", "cipher", "ipsk", "stls_sni", "tfo", "users")
 	ssUserMap := ssMap["users"].([]any)[0].(map[string]any)
 	assertHasKeys(t, ssUserMap, "user_id", "username", "upsk", "stls_password")
 

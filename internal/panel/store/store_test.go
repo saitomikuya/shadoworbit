@@ -647,6 +647,30 @@ func TestUsersAndAccessMatrix(t *testing.T) {
 		t.Fatalf("expected 3 authorized users after ResetUserTraffic, got %d", len(authUsers))
 	}
 
+	// GrantNodeToAllUsers idempotently grants a newly created node to every existing user.
+	nAutoGrant := &Node{Name: "AutoGrantSS", TokenHash: "tok_auto_grant_test", Enabled: true}
+	if err := s.CreateNode(ctx, nAutoGrant); err != nil {
+		t.Fatal(err)
+	}
+	granted1, err := s.GrantNodeToAllUsers(ctx, nAutoGrant.ID)
+	if err != nil {
+		t.Fatalf("GrantNodeToAllUsers failed: %v", err)
+	}
+	if granted1 != 6 {
+		t.Fatalf("expected 6 existing users granted, got %d", granted1)
+	}
+	granted2, err := s.GrantNodeToAllUsers(ctx, nAutoGrant.ID)
+	if err != nil {
+		t.Fatalf("second GrantNodeToAllUsers failed: %v", err)
+	}
+	if granted2 != 0 {
+		t.Fatalf("expected 0 new grants on idempotent second call, got %d", granted2)
+	}
+	unmappedIDs, err := s.GetUserNodeIDs(ctx, uUnmapped.ID)
+	if err != nil || len(unmappedIDs) != 1 || unmappedIDs[0] != nAutoGrant.ID {
+		t.Fatalf("expected uUnmapped to receive AutoGrantSS node, got %v, err=%v", unmappedIDs, err)
+	}
+
 	if err := s.DeleteUser(ctx, uDisabled.ID); err != nil {
 		t.Fatal(err)
 	}

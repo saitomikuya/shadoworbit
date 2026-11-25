@@ -27,6 +27,7 @@ type mihomoProxy struct {
 	Port              int                 `yaml:"port"`
 	Cipher            string              `yaml:"cipher"`
 	Password          string              `yaml:"password"`
+	TFO               bool                `yaml:"tfo,omitempty"`
 	UDP               bool                `yaml:"udp"`
 	UDPOverTCP        bool                `yaml:"udp-over-tcp"`
 	UDPOverTCPVersion int                 `yaml:"udp-over-tcp-version"`
@@ -51,6 +52,7 @@ type userNodeEntry struct {
 	uPSK    string
 	stlsPwd string
 	sni     string
+	tfo     bool
 }
 
 // RenderUser renders a user subscription for Mihomo, Surge, or Shadowrocket.
@@ -191,6 +193,7 @@ func filterUserNodes(nodes []store.Node, user *store.User) []userNodeEntry {
 			uPSK:    uPSK,
 			stlsPwd: user.STLSPassword,
 			sni:     sni,
+			tfo:     n.SSConfig.TFO,
 		})
 	}
 	return out
@@ -211,6 +214,7 @@ func (r *Renderer) renderUserMihomo(ctx context.Context, entries []userNodeEntry
 			Port:              e.tcpPort,
 			Cipher:            e.cipher,
 			Password:          e.iPSK + ":" + e.uPSK,
+			TFO:               e.tfo,
 			UDP:               true,
 			UDPOverTCP:        true,
 			UDPOverTCPVersion: 2,
@@ -494,8 +498,8 @@ func (r *Renderer) renderUserSurge(ctx context.Context, token string, entries []
 		}
 		name := dedupName(sanitizeSurgeName(e.node.Name, e.node.ID), usedNames)
 		line := fmt.Sprintf(
-			"%s = ss, %s, %d, encrypt-method=%s, password=%s:%s, shadow-tls-password=%s, shadow-tls-sni=%s, shadow-tls-version=3, udp-relay=true, udp-port=%d, tfo=true",
-			name, e.host, e.tcpPort, e.cipher, e.iPSK, e.uPSK, e.stlsPwd, e.sni, e.udpPort,
+			"%s = ss, %s, %d, encrypt-method=%s, password=%s:%s, shadow-tls-password=%s, shadow-tls-sni=%s, shadow-tls-version=3, udp-relay=true, udp-port=%d, tfo=%t",
+			name, e.host, e.tcpPort, e.cipher, e.iPSK, e.uPSK, e.stlsPwd, e.sni, e.udpPort, e.tfo,
 		)
 		proxyLines = append(proxyLines, line)
 		proxyNames = append(proxyNames, name)
@@ -559,11 +563,15 @@ func renderUserShadowrocket(entries []userNodeEntry, headers map[string][]string
 		}
 		stlsB64 := base64.StdEncoding.EncodeToString(stlsJSON)
 
+		query := fmt.Sprintf("shadow-tls=%s&uot=1", url.QueryEscape(stlsB64))
+		if e.tfo {
+			query += "&tfo=1"
+		}
 		uri := fmt.Sprintf(
-			"ss://%s@%s?shadow-tls=%s&uot=1#%s",
+			"ss://%s@%s?%s#%s",
 			userInfo,
 			net.JoinHostPort(e.host, strconv.Itoa(e.tcpPort)),
-			url.QueryEscape(stlsB64),
+			query,
 			url.PathEscape(name),
 		)
 		uris = append(uris, uri)

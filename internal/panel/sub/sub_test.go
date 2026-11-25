@@ -608,10 +608,11 @@ func TestRenderUserTargetsAndZeroSnellLeakage(t *testing.T) {
 			Cipher:  protocol.CipherAES128GCM,
 			IPSK:    ipsk16,
 			STLSSNI: "gateway.icloud.com:443",
+			TFO:     true,
 		},
 	})
 
-	// Node B (sort_order=1): AES-256-GCM, IPv6 PublicIPv6 fallback, CustomEntryPort overriding unified TCP/UDP port.
+	// Node B (sort_order=1): AES-256-GCM, IPv6 PublicIPv6 fallback, CustomEntryPort overriding unified TCP/UDP port, TFO=false.
 	nodeB := mustNewNode(t, st, store.Node{
 		Name:            "🇯🇵 JP, Edge=1",
 		PublicIPv6:      "[2001:db8::2]",
@@ -625,6 +626,7 @@ func TestRenderUserTargetsAndZeroSnellLeakage(t *testing.T) {
 			Cipher:  protocol.CipherAES256GCM,
 			IPSK:    ipsk32,
 			STLSSNI: "swcdn.apple.com",
+			TFO:     false,
 		},
 	})
 
@@ -725,18 +727,21 @@ func TestRenderUserTargetsAndZeroSnellLeakage(t *testing.T) {
 	if len(parsedProxy.Proxies) != 2 {
 		t.Fatalf("expected 2 mihomo proxies, got %d", len(parsedProxy.Proxies))
 	}
-	p0 := parsedProxy.Proxies[0] // Node B (sort_order=1)
+	p0 := parsedProxy.Proxies[0] // Node B (sort_order=1, TFO=false)
 	if p0.Name != "🇯🇵 JP, Edge=1" || p0.Type != "ss" || p0.Server != "2001:db8::2" || p0.Port != 18443 ||
-		p0.Cipher != protocol.CipherAES256GCM || p0.Password != ipsk32+":"+user.SSUPSK32 ||
+		p0.Cipher != protocol.CipherAES256GCM || p0.Password != ipsk32+":"+user.SSUPSK32 || p0.TFO ||
 		!p0.UDP || !p0.UDPOverTCP || p0.UDPOverTCPVersion != 2 || p0.ClientFingerprint != "chrome" ||
 		p0.Plugin != "shadow-tls" || p0.PluginOpts.Host != "swcdn.apple.com" || p0.PluginOpts.Password != user.STLSPassword || p0.PluginOpts.Version != 3 {
 		t.Fatalf("unexpected mihomo proxy[0]: %+v", p0)
 	}
-	p1 := parsedProxy.Proxies[1] // Node A (sort_order=2)
+	p1 := parsedProxy.Proxies[1] // Node A (sort_order=2, TFO=true)
 	if p1.Name != `🇭🇰 HK: "01" #vip` || p1.Server != "203.0.113.11" || p1.Port != 8443 ||
-		p1.Cipher != protocol.CipherAES128GCM || p1.Password != ipsk16+":"+user.SSUPSK16 ||
+		p1.Cipher != protocol.CipherAES128GCM || p1.Password != ipsk16+":"+user.SSUPSK16 || !p1.TFO ||
 		p1.PluginOpts.Host != "gateway.icloud.com" {
 		t.Fatalf("unexpected mihomo proxy[1]: %+v", p1)
+	}
+	if !strings.Contains(resMihomoProxy.Body, "tfo: true") {
+		t.Fatalf("expected tfo: true in rendered Mihomo YAML:\n%s", resMihomoProxy.Body)
 	}
 
 	resMihomoFull, err := r.RenderUser(ctx, user.SubToken, "", UserRenderOptions{Target: "mihomo", Mode: "full"})
@@ -782,7 +787,7 @@ func TestRenderUserTargetsAndZeroSnellLeakage(t *testing.T) {
 		t.Fatalf("expected 2 surge lines, got %d", len(surgeLines))
 	}
 	wantSurge0 := fmt.Sprintf(
-		"🇯🇵 JP- Edge-1 = ss, 2001:db8::2, 18443, encrypt-method=%s, password=%s:%s, shadow-tls-password=%s, shadow-tls-sni=swcdn.apple.com, shadow-tls-version=3, udp-relay=true, udp-port=18443, tfo=true",
+		"🇯🇵 JP- Edge-1 = ss, 2001:db8::2, 18443, encrypt-method=%s, password=%s:%s, shadow-tls-password=%s, shadow-tls-sni=swcdn.apple.com, shadow-tls-version=3, udp-relay=true, udp-port=18443, tfo=false",
 		protocol.CipherAES256GCM, ipsk32, user.SSUPSK32, user.STLSPassword,
 	)
 	wantSurge1 := fmt.Sprintf(
@@ -852,6 +857,9 @@ func TestRenderUserTargetsAndZeroSnellLeakage(t *testing.T) {
 	if q0.Get("uot") != "1" {
 		t.Fatalf("expected uot=1, got %q", q0.Get("uot"))
 	}
+	if q0.Get("tfo") != "" {
+		t.Fatalf("expected no tfo query param for nodeB (TFO=false), got %q", q0.Get("tfo"))
+	}
 	stlsBytes0, err := base64.StdEncoding.DecodeString(q0.Get("shadow-tls"))
 	if err != nil {
 		t.Fatalf("decode shadow-tls param failed: %v", err)
@@ -874,6 +882,9 @@ func TestRenderUserTargetsAndZeroSnellLeakage(t *testing.T) {
 	}
 	if u1.Host != "203.0.113.11:8443" || u1.Fragment != `🇭🇰 HK: "01" #vip` {
 		t.Fatalf("unexpected u1 host=%q frag=%q", u1.Host, u1.Fragment)
+	}
+	if u1.Query().Get("tfo") != "1" {
+		t.Fatalf("expected tfo=1 for nodeA (TFO=true), got %q", u1.Query().Get("tfo"))
 	}
 
 	// Shadowrocket rejects TemplateID > 0 with ErrTemplateMismatch.

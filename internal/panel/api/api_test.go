@@ -2119,3 +2119,148 @@ func TestTrafficLogsAndDockerImageSettingsAPI(t *testing.T) {
 		t.Fatalf("expected 400 on invalid merge, got %d", st)
 	}
 }
+
+func TestDefaultTFOAndAutoGrantNewSSNodeToExistingUsers(t *testing.T) {
+	env := newTestEnv(t, nil, "")
+
+	// 1. Create an existing user first (with no nodes initially).
+	st, _, rawU := env.do(http.MethodPost, "/api/v1/admin/users", env.jwt, map[string]any{
+		"username": "existing_sub_user",
+	})
+	if st != http.StatusCreated {
+		t.Fatalf("create user failed: %d %s", st, string(rawU))
+	}
+	var existingUser struct {
+		ID       int64  `json:"id"`
+		SubToken string `json:"sub_token"`
+	}
+	_ = json.Unmarshal(rawU, &existingUser)
+
+	// 2. Create a new node omitting tfo on both snell_config and ss_config -> both must default to true.
+	//    Since ss_config.enabled == true, existing_sub_user must automatically receive access to it.
+	st, _, rawN1 := env.do(http.MethodPost, "/api/v1/admin/nodes", env.jwt, map[string]any{
+		"name":      "AutoGrant-DefaultTFO",
+		"public_ip": "198.51.100.88",
+		"snell_config": map[string]any{
+			"enabled":       true,
+			"version":       "v5",
+			"public_port":   18443,
+			"inner_port":    18444,
+			"psk":           "snellpsk123",
+			"obfs":          "off",
+			"stls_password": "stlspwd123",
+			"stls_sni":      "gateway.icloud.com",
+		},
+		"ss_config": map[string]any{
+			"enabled":  true,
+			"tcp_port": 28443,
+			"udp_port": 28444,
+			"cipher":   protocol.CipherAES128GCM,
+			"ipsk":     "AAAAAAAAAAAAAAAAAAAAAA==",
+			"stls_sni": "swdist.apple.com",
+		},
+	})
+	if st != http.StatusCreated {
+		t.Fatalf("create node 1 failed: %d %s", st, string(rawN1))
+	}
+	var n1 struct {
+		ID          int64                `json:"id"`
+		NodeToken   string               `json:"node_token"`
+		SnellConfig protocol.SnellConfig `json:"snell_config"`
+		SSConfig    protocol.SSConfig    `json:"ss_config"`
+	}
+	if err := json.Unmarshal(rawN1, &n1); err != nil {
+		t.Fatal(err)
+	}
+	if !n1.SnellConfig.TFO || !n1.SSConfig.TFO {
+		t.Fatalf("expected snell_config.tfo and ss_config.tfo to default true, got snell=%v ss=%v", n1.SnellConfig.TFO, n1.SSConfig.TFO)
+	}
+
+	// Verify existing user now has n1.ID in GET /api/v1/admin/users and in /s/u/<token>
+	st, _, rawUsers := env.do(http.MethodGet, "/api/v1/admin/users", env.jwt, nil)
+	if st != http.StatusOK {
+		t.Fatalf("list users failed: %d %s", st, string(rawUsers))
+	}
+	var listedUsers []struct {
+		ID      int64   `json:"id"`
+		NodeIDs []int64 `json:"node_ids"`
+	}
+	if err := json.Unmarshal(rawUsers, &listedUsers); err != nil {
+		t.Fatal(err)
+	}
+	if len(listedUsers) != 1 || len(listedUsers[0].NodeIDs) != 1 || listedUsers[0].NodeIDs[0] != n1.ID {
+		t.Fatalf("expected existing user to auto-receive node %d, got %+v", n1.ID, listedUsers)
+	}
+
+	st, _, rawSub := env.do(http.MethodGet, "/s/u/"+existingUser.SubToken+"?target=surge&mode=proxy", "", nil)
+	if st != http.StatusOK || !strings.Contains(string(rawSub), "AutoGrant-DefaultTFO = ss,") || !strings.Contains(string(rawSub), "tfo=true") {
+		t.Fatalf("expected existing user subscription to include new SS node with tfo=true, got %d %s", st, string(rawSub))
+	}
+
+	// 3. Connect agent 1, verify initial config_sync has ss.tfo=true, then toggle ss_config.tfo=false via PUT
+	//    and confirm both config_sync and /s/u/<token> reflect tfo=false.
+	conn1 := env.dialAgent(n1.NodeToken)
+	sync1Env := readEnv(t, conn1)
+	var sync1 protocol.ServerConfigSync
+	if err := sync1Env.DecodePayload(&sync1); err != nil {
+		t.Fatal(err)
+	}
+	if !sync1.Snell.TFO || !sync1.SS.TFO || len(sync1.SS.Users) != 1 {
+		t.Fatalf("unexpected initial sync payload: snell.tfo=%v ss.tfo=%v users=%d", sync1.Snell.TFO, sync1.SS.TFO, len(sync1.SS.Users))
+	}
+
+	n1.SSConfig.TFO = false
+	st, _, rawUpd := env.do(http.MethodPut, fmt.Sprintf("/api/v1/admin/nodes/%d", n1.ID), env.jwt, map[string]any{
+		"ss_config": n1.SSConfig,
+	})
+	if st != http.StatusOK {
+		t.Fatalf("update node ss_config.tfo=false failed: %d %s", st, string(rawUpd))
+	}
+	sync2Env := readEnv(t, conn1)
+	var sync2 protocol.ServerConfigSync
+	if err := sync2Env.DecodePayload(&sync2); err != nil {
+		t.Fatal(err)
+	}
+	if sync2.SS.TFO {
+		t.Fatalf("expected synced ss.tfo=false after PUT, got true")
+	}
+	st, _, rawSubOff := env.do(http.MethodGet, "/s/u/"+existingUser.SubToken+"?target=surge&mode=proxy", "", nil)
+	if st != http.StatusOK || !strings.Contains(string(rawSubOff), "tfo=false") {
+		t.Fatalf("expected surge user sub to reflect tfo=false after toggle, got %d %s", st, string(rawSubOff))
+	}
+
+	// 4. Create a second node with explicit tfo=false and ss_config.enabled=false:
+	//    explicit false must be honored, and existing user must NOT be auto-granted node 2.
+	st, _, rawN2 := env.do(http.MethodPost, "/api/v1/admin/nodes", env.jwt, map[string]any{
+		"name":      "SnellOnly-ExplicitTFOFalse",
+		"public_ip": "198.51.100.99",
+		"snell_config": map[string]any{
+			"enabled": true,
+			"tfo":     false,
+		},
+		"ss_config": map[string]any{
+			"enabled": false,
+			"tfo":     false,
+		},
+	})
+	if st != http.StatusCreated {
+		t.Fatalf("create node 2 failed: %d %s", st, string(rawN2))
+	}
+	var n2 struct {
+		ID          int64                `json:"id"`
+		SnellConfig protocol.SnellConfig `json:"snell_config"`
+		SSConfig    protocol.SSConfig    `json:"ss_config"`
+	}
+	_ = json.Unmarshal(rawN2, &n2)
+	if n2.SnellConfig.TFO || n2.SSConfig.TFO {
+		t.Fatalf("expected explicit tfo=false to be preserved, got snell=%v ss=%v", n2.SnellConfig.TFO, n2.SSConfig.TFO)
+	}
+	st, _, rawUsers2 := env.do(http.MethodGet, "/api/v1/admin/users", env.jwt, nil)
+	if st != http.StatusOK {
+		t.Fatal(st)
+	}
+	_ = json.Unmarshal(rawUsers2, &listedUsers)
+	if len(listedUsers) != 1 || len(listedUsers[0].NodeIDs) != 1 || listedUsers[0].NodeIDs[0] != n1.ID {
+		t.Fatalf("expected SS-disabled node %d NOT to be auto-granted to existing user, got %+v", n2.ID, listedUsers)
+	}
+}

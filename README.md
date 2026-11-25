@@ -7,8 +7,8 @@
 ## 核心特性
 
 ### 1. 三内核物理隔离与低中断变更
-- **管理员通道（`snell-server` + `shadow-tls`）**：`snell-server`（支持 v4/v5）仅监听 `127.0.0.1:<snell_inner_port>`，由官方 `shadow-tls` v3（`--v3 --strict --fastopen`）对外提供入口，避免直接暴露代理协议特征。
-- **用户通道（`sing-box`）**：单进程内封装 `stls-in`（ShadowTLS v3 strict 模式）、`ss-tcp-in`（支持 `2022-blake3-aes-128-gcm` / `2022-blake3-aes-256-gcm` EIH 多用户鉴权与 UDP-over-TCP）、`ss-udp-in` 原生 UDP 及 `v2ray_api` 实时流量统计端口。
+- **管理员通道（`snell-server` + `shadow-tls`）**：`snell-server`（支持 v4/v5）仅监听 `127.0.0.1:<snell_inner_port>`，由官方 `shadow-tls` v3（`--v3 --strict --fastopen`）对外提供入口，默认开启 TCP Fast Open (TFO) 并支持按节点开关，避免直接暴露代理协议特征。
+- **用户通道（`sing-box`）**：单进程内封装 `stls-in`（ShadowTLS v3 strict 模式）、`ss-tcp-in`（支持 `2022-blake3-aes-128-gcm` / `2022-blake3-aes-256-gcm` EIH 多用户鉴权与 UDP-over-TCP）、`ss-udp-in` 原生 UDP 及 `v2ray_api` 实时流量统计端口；支持在管理端按节点开关 `sing-box` TCP Fast Open (TFO)（新建节点默认开启，自动同步至 Mihomo / Surge / Shadowrocket 用户订阅），且新建启用用户通道的节点会自动授权给存量用户。
 - **变更隔离**：新增、禁用或调整普通用户配额时**仅热重载 `sing-box`**，管理员的 `snell-server` + `shadow-tls` 连接保持不断。
 - **离线自治**：节点端将下发配置持久化至 `last_config.json`，管理端短暂失联或重启期间节点照常转发代理流量。
 

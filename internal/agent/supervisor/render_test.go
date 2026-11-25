@@ -566,22 +566,47 @@ func TestSupervisor_ConfigRenderAdversarialMatrix(t *testing.T) {
 			}
 		}
 
-		// Empty SS.Users with SS.Enabled=true and cipher 128 <-> 256 switch.
-		ss128 := protocol.SSConfig{
-			Enabled: true,
-			TCPPort: 20002,
-			UDPPort: 20003,
-			Cipher:  protocol.CipherAES128GCM,
-			IPSK:    b64Key(16, 1),
-			STLSSNI: "[2001:db8::1]",
-			Users:   nil,
-		}
-		raw, err := renderSingBoxJSON(ss128, 1053, 18080, 31002, true, true)
-		if err != nil {
-			t.Fatalf("renderSingBoxJSON IPv6 SNI + empty users failed: %v", err)
-		}
-		if !strings.Contains(string(raw), `"server": "2001:db8::1"`) || strings.Contains(string(raw), ": null") {
-			t.Fatalf("unexpected rendered sing-box json:\n%s", string(raw))
+		// Empty SS.Users with SS.Enabled=true, cipher 128, and TFO false vs true.
+		for _, ssTFO := range []bool{false, true} {
+			ss128 := protocol.SSConfig{
+				Enabled: true,
+				TCPPort: 20002,
+				UDPPort: 20003,
+				Cipher:  protocol.CipherAES128GCM,
+				IPSK:    b64Key(16, 1),
+				STLSSNI: "[2001:db8::1]",
+				TFO:     ssTFO,
+				Users:   nil,
+			}
+			raw, err := renderSingBoxJSON(ss128, 1053, 18080, 31002, true, true)
+			if err != nil {
+				t.Fatalf("renderSingBoxJSON IPv6 SNI + empty users (tfo=%v) failed: %v", ssTFO, err)
+			}
+			if !strings.Contains(string(raw), `"server": "2001:db8::1"`) || strings.Contains(string(raw), ": null") {
+				t.Fatalf("unexpected rendered sing-box json:\n%s", string(raw))
+			}
+
+			var doc struct {
+				Inbounds []map[string]any `json:"inbounds"`
+			}
+			if err := json.Unmarshal(raw, &doc); err != nil {
+				t.Fatalf("unmarshal sing-box json: %v", err)
+			}
+			byTag := make(map[string]map[string]any, len(doc.Inbounds))
+			for _, in := range doc.Inbounds {
+				if tag, _ := in["tag"].(string); tag != "" {
+					byTag[tag] = in
+				}
+			}
+			for _, tag := range []string{"stls-in", "ss-tcp-in"} {
+				v, ok := byTag[tag]["tcp_fast_open"]
+				if !ok || v != ssTFO {
+					t.Fatalf("inbound %s tcp_fast_open = %v (present=%v), want %v", tag, v, ok, ssTFO)
+				}
+			}
+			if _, ok := byTag["ss-udp-in"]["tcp_fast_open"]; ok {
+				t.Fatalf("ss-udp-in must not include tcp_fast_open: %+v", byTag["ss-udp-in"])
+			}
 		}
 	})
 }

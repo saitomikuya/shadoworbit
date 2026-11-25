@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   BarChart3,
   CheckSquare,
@@ -40,6 +40,14 @@ export function UsersPage() {
   const toast = useToast();
   const [users, setUsers] = useState<UserDTO[]>([]);
   const [nodes, setNodes] = useState<NodeDTO[]>([]);
+  const ssEnabledNodes = useMemo(
+    () => nodes.filter((n) => Boolean(n.ss_config?.enabled)),
+    [nodes]
+  );
+  const ssEnabledNodeIdSet = useMemo(
+    () => new Set(ssEnabledNodes.map((n) => n.id)),
+    [ssEnabledNodes]
+  );
   const [templates, setTemplates] = useState<SubTemplate[]>([]);
   const [adminTraffic, setAdminTraffic] = useState<AdminTrafficResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -184,7 +192,7 @@ export function UsersPage() {
     setQuotaBytes(0);
     setResetDay(1);
     setExpireInput('');
-    setSelectedNodeIds(nodes.map((n) => n.id));
+    setSelectedNodeIds(ssEnabledNodes.map((n) => n.id));
     setEditOpen(true);
   };
 
@@ -195,7 +203,7 @@ export function UsersPage() {
     setQuotaBytes(u.traffic_quota_bytes);
     setResetDay(u.billing_reset_day);
     setExpireInput(toLocalDateTimeInput(u.expire_at));
-    setSelectedNodeIds(u.node_ids || []);
+    setSelectedNodeIds((u.node_ids || []).filter((id) => ssEnabledNodeIdSet.has(id)));
     setEditOpen(true);
   };
 
@@ -215,6 +223,7 @@ export function UsersPage() {
       return;
     }
 
+    const filteredNodeIds = selectedNodeIds.filter((id) => ssEnabledNodeIdSet.has(id));
     setSaving(true);
     try {
       if (editingUser === null) {
@@ -224,7 +233,7 @@ export function UsersPage() {
           traffic_quota_bytes: quotaBytes,
           billing_reset_day: resetDay,
           expire_at: expireAt,
-          node_ids: selectedNodeIds,
+          node_ids: filteredNodeIds,
         });
         toast.success(`已创建用户 "${username.trim()}"`);
       } else {
@@ -234,7 +243,7 @@ export function UsersPage() {
           traffic_quota_bytes: quotaBytes,
           billing_reset_day: resetDay,
           expire_at: expireAt,
-          node_ids: selectedNodeIds,
+          node_ids: filteredNodeIds,
         });
         toast.success(`已更新用户 "${username.trim()}"`);
       }
@@ -273,7 +282,8 @@ export function UsersPage() {
     if (!matrixUser) return;
     setMatrixSaving(true);
     try {
-      await api.setUserNodes(matrixUser.id, matrixNodeIds);
+      const filteredNodeIds = matrixNodeIds.filter((id) => ssEnabledNodeIdSet.has(id));
+      await api.setUserNodes(matrixUser.id, filteredNodeIds);
       toast.success(`已更新 "${matrixUser.username}" 的可用节点权限`);
       setMatrixUser(null);
       await load();
@@ -448,6 +458,7 @@ export function UsersPage() {
                 ? Math.min(100, (used / u.traffic_quota_bytes) * 100)
                 : 0;
             const expired = u.expire_at ? new Date(u.expire_at).getTime() <= Date.now() : false;
+            const authorizedSSNodeIds = (u.node_ids || []).filter((id) => ssEnabledNodeIdSet.has(id));
             return (
               <div key={u.id} className="card space-y-3 p-4">
                 <div className="flex items-start justify-between gap-2">
@@ -493,12 +504,12 @@ export function UsersPage() {
                       type="button"
                       onClick={() => {
                         setMatrixUser(u);
-                        setMatrixNodeIds(u.node_ids || []);
+                        setMatrixNodeIds(authorizedSSNodeIds);
                       }}
                       className="inline-flex items-center gap-1 rounded border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium dark:border-slate-700 dark:bg-slate-900"
                     >
                       <CheckSquare className="h-3 w-3 text-indigo-500" />
-                      {(u.node_ids || []).length} / {nodes.length}
+                      {authorizedSSNodeIds.length} / {ssEnabledNodes.length}
                     </button>
                   </div>
                   {u.traffic_quota_bytes > 0 && (
@@ -713,17 +724,24 @@ export function UsersPage() {
                         {u.expire_at ? formatDateTime(u.expire_at) : '永不过期'}
                       </td>
                       <td className="px-4 py-3">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setMatrixUser(u);
-                            setMatrixNodeIds(u.node_ids || []);
-                          }}
-                          className="inline-flex whitespace-nowrap items-center gap-1 rounded-lg border border-slate-200 px-2 py-1 text-xs font-medium hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
-                        >
-                          <CheckSquare className="h-3.5 w-3.5 text-indigo-500" />
-                          {(u.node_ids || []).length} / {nodes.length}
-                        </button>
+                        {(() => {
+                          const tableAuthorizedSSIds = (u.node_ids || []).filter((id) =>
+                            ssEnabledNodeIdSet.has(id)
+                          );
+                          return (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setMatrixUser(u);
+                                setMatrixNodeIds(tableAuthorizedSSIds);
+                              }}
+                              className="inline-flex whitespace-nowrap items-center gap-1 rounded-lg border border-slate-200 px-2 py-1 text-xs font-medium hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800"
+                            >
+                              <CheckSquare className="h-3.5 w-3.5 text-indigo-500" />
+                              {tableAuthorizedSSIds.length} / {ssEnabledNodes.length}
+                            </button>
+                          );
+                        })()}
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex flex-wrap justify-end gap-1.5">
@@ -1178,7 +1196,7 @@ export function UsersPage() {
               <div className="flex gap-2 text-xs">
                 <button
                   type="button"
-                  onClick={() => setSelectedNodeIds(nodes.map((n) => n.id))}
+                  onClick={() => setSelectedNodeIds(ssEnabledNodes.map((n) => n.id))}
                   className="text-indigo-600 hover:underline dark:text-indigo-400"
                 >
                   全选
@@ -1193,17 +1211,23 @@ export function UsersPage() {
               </div>
             </div>
             <div className="grid max-h-40 grid-cols-1 gap-1.5 overflow-y-auto rounded-lg border border-slate-200 p-2.5 dark:border-slate-800 sm:grid-cols-2">
-              {nodes.map((n) => (
-                <label key={n.id} className="flex items-center gap-2 rounded px-1.5 py-1 text-xs hover:bg-slate-50 dark:hover:bg-slate-800">
-                  <input
-                    type="checkbox"
-                    checked={selectedNodeIds.includes(n.id)}
-                    onChange={() => setSelectedNodeIds((prev) => toggleInArray(prev, n.id))}
-                    className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600"
-                  />
-                  <span className="truncate">{n.name}</span>
-                </label>
-              ))}
+              {ssEnabledNodes.length === 0 ? (
+                <div className="col-span-full py-2 text-center text-xs text-slate-400">
+                  暂无已启用 sing-box 用户通道的可用节点
+                </div>
+              ) : (
+                ssEnabledNodes.map((n) => (
+                  <label key={n.id} className="flex items-center gap-2 rounded px-1.5 py-1 text-xs hover:bg-slate-50 dark:hover:bg-slate-800">
+                    <input
+                      type="checkbox"
+                      checked={selectedNodeIds.includes(n.id)}
+                      onChange={() => setSelectedNodeIds((prev) => toggleInArray(prev, n.id))}
+                      className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600"
+                    />
+                    <span className="truncate">{n.name}</span>
+                  </label>
+                ))
+              )}
             </div>
           </div>
         </form>
@@ -1228,11 +1252,11 @@ export function UsersPage() {
       >
         <div className="space-y-3">
           <div className="flex justify-between text-xs">
-            <span className="text-slate-500">已选择 {matrixNodeIds.length} / {nodes.length} 个节点</span>
+            <span className="text-slate-500">已选择 {matrixNodeIds.length} / {ssEnabledNodes.length} 个可用节点</span>
             <div className="flex gap-3">
               <button
                 type="button"
-                onClick={() => setMatrixNodeIds(nodes.map((n) => n.id))}
+                onClick={() => setMatrixNodeIds(ssEnabledNodes.map((n) => n.id))}
                 className="text-indigo-600 hover:underline dark:text-indigo-400"
               >
                 全选
@@ -1247,25 +1271,31 @@ export function UsersPage() {
             </div>
           </div>
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {nodes.map((n) => (
-              <label
-                key={n.id}
-                className="flex cursor-pointer items-center justify-between rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/60"
-              >
-                <span className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    checked={matrixNodeIds.includes(n.id)}
-                    onChange={() => setMatrixNodeIds((prev) => toggleInArray(prev, n.id))}
-                    className="h-4 w-4 rounded border-slate-300 text-indigo-600"
-                  />
-                  <span>{n.name}</span>
-                </span>
-                {n.region_tag && (
-                  <span className="text-[11px] font-mono uppercase text-slate-400">{n.region_tag}</span>
-                )}
-              </label>
-            ))}
+            {ssEnabledNodes.length === 0 ? (
+              <div className="col-span-full rounded-lg border border-dashed border-slate-200 py-4 text-center text-xs text-slate-400 dark:border-slate-700">
+                暂无已启用 sing-box 用户通道的可用节点
+              </div>
+            ) : (
+              ssEnabledNodes.map((n) => (
+                <label
+                  key={n.id}
+                  className="flex cursor-pointer items-center justify-between rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/60"
+                >
+                  <span className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={matrixNodeIds.includes(n.id)}
+                      onChange={() => setMatrixNodeIds((prev) => toggleInArray(prev, n.id))}
+                      className="h-4 w-4 rounded border-slate-300 text-indigo-600"
+                    />
+                    <span>{n.name}</span>
+                  </span>
+                  {n.region_tag && (
+                    <span className="text-[11px] font-mono uppercase text-slate-400">{n.region_tag}</span>
+                  )}
+                </label>
+              ))
+            )}
           </div>
         </div>
       </Modal>

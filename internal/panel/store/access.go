@@ -108,6 +108,35 @@ func (s *Store) SetUserNodes(ctx context.Context, userID int64, nodeIDs []int64)
 	return err
 }
 
+// GrantNodeToAllUsers idempotently grants access to nodeID for every existing user.
+func (s *Store) GrantNodeToAllUsers(ctx context.Context, nodeID int64) (int64, error) {
+	if nodeID <= 0 {
+		return 0, fmt.Errorf("%w: invalid node_id", ErrInvalidArgument)
+	}
+	nowStr := FormatSQLiteTime(time.Now().UTC())
+	var affected int64
+	err := s.withTx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `
+INSERT OR IGNORE INTO user_node_access(user_id, node_id, created_at)
+SELECT id, ?, ? FROM users`,
+			nodeID, nowStr,
+		)
+		if err != nil {
+			return mapSQLiteErr(err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return mapSQLiteErr(err)
+		}
+		affected = n
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return affected, nil
+}
+
 // GetUserNodeIDs returns the authorized node IDs for userID ordered by node_id ASC.
 func (s *Store) GetUserNodeIDs(ctx context.Context, userID int64) ([]int64, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT node_id FROM user_node_access WHERE user_id = ? ORDER BY node_id ASC`, userID)

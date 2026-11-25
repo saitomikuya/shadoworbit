@@ -21,26 +21,49 @@ type nodeDTO struct {
 	NodeToken string `json:"node_token,omitempty"`
 }
 
+type createSnellConfigRequest struct {
+	Enabled         bool   `json:"enabled"`
+	Version         string `json:"version"`
+	PublicPort      int    `json:"public_port"`
+	InnerPort       int    `json:"inner_port"`
+	PSK             string `json:"psk"`
+	Obfs            string `json:"obfs"`
+	TFO             *bool  `json:"tfo"`
+	DNSIPPreference string `json:"dns_ip_preference"`
+	STLSPassword    string `json:"stls_password"`
+	STLSSNI         string `json:"stls_sni"`
+}
+
+type createSSConfigRequest struct {
+	Enabled bool   `json:"enabled"`
+	TCPPort int    `json:"tcp_port"`
+	UDPPort int    `json:"udp_port"`
+	Cipher  string `json:"cipher"`
+	IPSK    string `json:"ipsk"`
+	STLSSNI string `json:"stls_sni"`
+	TFO     *bool  `json:"tfo"`
+}
+
 type createNodeRequest struct {
-	Name                  string                `json:"name"`
-	RegionTag             string                `json:"region_tag"`
-	PublicIP              string                `json:"public_ip"`
-	PublicIPv6            string                `json:"public_ipv6"`
-	CustomEntryHost       string                `json:"custom_entry_host"`
-	CustomEntryPort       int                   `json:"custom_entry_port"`
-	SortOrder             int                   `json:"sort_order"`
-	Enabled               *bool                 `json:"enabled"`
-	SnellConfig           *protocol.SnellConfig `json:"snell_config"`
-	SSConfig              *protocol.SSConfig    `json:"ss_config"`
-	DNSUnlockEnabled      bool                  `json:"dns_unlock_enabled"`
-	DNSUnlockServer       string                `json:"dns_unlock_server"`
-	DNSRuleGroupID        *int64                `json:"dns_rule_group_id"`
-	DNSExtraRules         []string              `json:"dns_extra_rules"`
-	TrafficLimitBytes     int64                 `json:"traffic_limit_bytes"`
-	TrafficThresholdBytes int64                 `json:"traffic_threshold_bytes"`
-	TrafficCountMode      string                `json:"traffic_count_mode"`
-	ThresholdAction       string                `json:"threshold_action"`
-	BillingResetDay       *int                  `json:"billing_reset_day"`
+	Name                  string                    `json:"name"`
+	RegionTag             string                    `json:"region_tag"`
+	PublicIP              string                    `json:"public_ip"`
+	PublicIPv6            string                    `json:"public_ipv6"`
+	CustomEntryHost       string                    `json:"custom_entry_host"`
+	CustomEntryPort       int                       `json:"custom_entry_port"`
+	SortOrder             int                       `json:"sort_order"`
+	Enabled               *bool                     `json:"enabled"`
+	SnellConfig           *createSnellConfigRequest `json:"snell_config"`
+	SSConfig              *createSSConfigRequest    `json:"ss_config"`
+	DNSUnlockEnabled      bool                      `json:"dns_unlock_enabled"`
+	DNSUnlockServer       string                    `json:"dns_unlock_server"`
+	DNSRuleGroupID        *int64                    `json:"dns_rule_group_id"`
+	DNSExtraRules         []string                  `json:"dns_extra_rules"`
+	TrafficLimitBytes     int64                     `json:"traffic_limit_bytes"`
+	TrafficThresholdBytes int64                     `json:"traffic_threshold_bytes"`
+	TrafficCountMode      string                    `json:"traffic_count_mode"`
+	ThresholdAction       string                    `json:"threshold_action"`
+	BillingResetDay       *int                      `json:"billing_reset_day"`
 }
 
 type optionalInt64 struct {
@@ -242,17 +265,44 @@ func (s *server) handleCreateNode(w http.ResponseWriter, r *http.Request, _ *aut
 		thresholdAction = protocol.ThresholdActionStopAll
 	}
 
-	var snellCfg protocol.SnellConfig
+	snellCfg := protocol.SnellConfig{TFO: true}
 	if req.SnellConfig != nil {
-		snellCfg = *req.SnellConfig
+		tfo := true
+		if req.SnellConfig.TFO != nil {
+			tfo = *req.SnellConfig.TFO
+		}
+		snellCfg = protocol.SnellConfig{
+			Enabled:         req.SnellConfig.Enabled,
+			Version:         req.SnellConfig.Version,
+			PublicPort:      req.SnellConfig.PublicPort,
+			InnerPort:       req.SnellConfig.InnerPort,
+			PSK:             req.SnellConfig.PSK,
+			Obfs:            req.SnellConfig.Obfs,
+			TFO:             tfo,
+			DNSIPPreference: req.SnellConfig.DNSIPPreference,
+			STLSPassword:    req.SnellConfig.STLSPassword,
+			STLSSNI:         req.SnellConfig.STLSSNI,
+		}
 		if snellCfg.Enabled && snellCfg.Version == "" {
 			snellCfg.Version = protocol.SnellVersionV5
 		}
 	}
-	var ssCfg protocol.SSConfig
+	ssCfg := protocol.SSConfig{TFO: true}
 	if req.SSConfig != nil {
-		ssCfg = *req.SSConfig
-		ssCfg.Users = nil
+		tfo := true
+		if req.SSConfig.TFO != nil {
+			tfo = *req.SSConfig.TFO
+		}
+		ssCfg = protocol.SSConfig{
+			Enabled: req.SSConfig.Enabled,
+			TCPPort: req.SSConfig.TCPPort,
+			UDPPort: req.SSConfig.UDPPort,
+			Cipher:  req.SSConfig.Cipher,
+			IPSK:    req.SSConfig.IPSK,
+			STLSSNI: req.SSConfig.STLSSNI,
+			TFO:     tfo,
+			Users:   nil,
+		}
 	}
 	extraRules := req.DNSExtraRules
 	if extraRules == nil {
@@ -311,6 +361,12 @@ func (s *server) handleCreateNode(w http.ResponseWriter, r *http.Request, _ *aut
 		_ = s.store.DeleteNode(r.Context(), node.ID)
 		writeError(w, http.StatusInternalServerError, "failed to persist encrypted node token")
 		return
+	}
+
+	if node.SSConfig.Enabled {
+		if _, err := s.store.GrantNodeToAllUsers(r.Context(), node.ID); err != nil {
+			s.logger.Warn("grant new SS node to existing users failed", "node_id", node.ID, "err", err)
+		}
 	}
 
 	created, err := s.store.GetNodeByID(r.Context(), node.ID)

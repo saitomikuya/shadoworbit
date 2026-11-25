@@ -63,7 +63,7 @@ function makeDefaultForm(sortOrder = 0): NodeUpsertRequest {
       inner_port: 18444,
       psk: randomAlnum(24),
       obfs: 'off',
-      tfo: false,
+      tfo: true,
       dns_ip_preference: 'prefer-ipv4',
       stls_password: randomAlnum(20),
       stls_sni: 'gateway.icloud.com',
@@ -75,6 +75,7 @@ function makeDefaultForm(sortOrder = 0): NodeUpsertRequest {
       cipher: '2022-blake3-aes-128-gcm',
       ipsk: randomBase64(16),
       stls_sni: 'swdist.apple.com',
+      tfo: true,
     },
     dns_unlock_enabled: false,
     dns_unlock_server: '',
@@ -117,6 +118,7 @@ function nodeToForm(n: NodeDTO): NodeUpsertRequest {
       cipher: n.ss_config.cipher || '2022-blake3-aes-128-gcm',
       ipsk: n.ss_config.ipsk || '',
       stls_sni: n.ss_config.stls_sni || '',
+      tfo: Boolean(n.ss_config.tfo),
     },
     dns_unlock_enabled: n.dns_unlock_enabled,
     dns_unlock_server: n.dns_unlock_server,
@@ -1222,6 +1224,22 @@ export function NodesPage() {
                     重新生成
                   </button>
                 </div>
+              </div>
+              <div className="sm:col-span-2">
+                <label className="flex items-center gap-2 text-sm font-medium">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(form.ss_config.tfo)}
+                    onChange={(e) =>
+                      setForm({
+                        ...form,
+                        ss_config: { ...form.ss_config, tfo: e.target.checked },
+                      })
+                    }
+                    className="h-4 w-4 rounded border-slate-300 text-indigo-600"
+                  />
+                  启用 TCP Fast Open (TFO)
+                </label>
               </div>
             </div>
           )}
