@@ -165,7 +165,7 @@ func querySinglePublicIP(ctx context.Context, client *http.Client, endpoint stri
 	if err != nil {
 		return ""
 	}
-	req.Header.Set("User-Agent", "snell-panel-agent/1.0")
+	req.Header.Set("User-Agent", "node-agent/1.0")
 
 	resp, err := client.Do(req)
 	if err != nil {

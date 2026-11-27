@@ -296,7 +296,7 @@ func TestF19_Tier1_DockerfileAgentMultiArchTiniAnd3Kernels(t *testing.T) {
 		"golang", "1.26", "cgo_enabled=0", "./cmd/agent",
 		"tini", "ca-certificates",
 		"snell-server", "shadow-tls", "sing-box",
-		"/var/lib/snell-panel-agent",
+		"/var/lib/node-agent",
 	} {
 		if !strings.Contains(lower, req) {
 			t.Fatalf("deploy/Dockerfile.agent missing required multi-arch/kernel/tini token %q", req)
@@ -344,7 +344,7 @@ func TestF19_Tier1_DockerComposeValidYAMLAndPanelService(t *testing.T) {
 			if svc.Restart != "always" && svc.Restart != "unless-stopped" {
 				t.Fatalf("panel service %q must set restart policy always/unless-stopped, got %q", name, svc.Restart)
 			}
-			for _, envKey := range []string{"ADMIN_USER", "ADMIN_INITIAL_PASS", "TZ"} {
+			for _, envKey := range []string{"ADMIN_INITIAL_PASS", "TZ"} {
 				if _, ok := envMap[envKey]; !ok {
 					t.Fatalf("panel service %q missing env var %q in %+v", name, envKey, envMap)
 				}
@@ -668,12 +668,11 @@ func TestF20_Tier1_READMEExistsWithPanelAndAgentDeployDocs(t *testing.T) {
 		"docker-compose.yml",
 		"8080",
 		"./data",
-		"ADMIN_USER",
 		"ADMIN_INITIAL_PASS",
 		"PANEL_URL",
 		"NODE_TOKEN",
 		"--network host",
-		"/var/lib/snell-panel-agent",
+		"/var/lib/node-agent",
 		"snell-server",
 		"shadow-tls",
 		"sing-box",
@@ -768,7 +767,7 @@ func TestF20_Tier2_WorkflowReferencedPathsExistInRepo(t *testing.T) {
 func TestF20_Tier2_READMEEnvVarsConsistentWithCmdBinaries(t *testing.T) {
 	readme := f19_readRepoFile(t, "README.md")
 	for _, requiredEnv := range []string{
-		"ADMIN_USER", "ADMIN_INITIAL_PASS", "PANEL_URL", "NODE_TOKEN", "TZ",
+		"ADMIN_INITIAL_PASS", "PANEL_URL", "NODE_TOKEN", "TZ",
 	} {
 		if !strings.Contains(readme, requiredEnv) {
 			t.Fatalf("README.md missing canonical env var %q", requiredEnv)

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, Lock, Moon, Shield, Sun, User } from 'lucide-react';
+import { ArrowLeft, Lock, Moon, Shield, Sun } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { ApiError } from '../../api/client';
@@ -8,21 +8,20 @@ import { ApiError } from '../../api/client';
 export function LoginPage() {
   const { login } = useAuth();
   const { theme, toggleTheme } = useTheme();
-  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username.trim() || !password) {
-      setError('请输入用户名和密码');
+    if (!password) {
+      setError('请输入密码');
       return;
     }
     setSubmitting(true);
     setError(null);
     try {
-      await login(username.trim(), password);
+      await login(password);
     } catch (err) {
       if (err instanceof ApiError) {
         setError(err.message);
@@ -72,27 +71,8 @@ export function LoginPage() {
           )}
 
           <div>
-            <label htmlFor="login-username" className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">
-              管理员用户名
-            </label>
-            <div className="relative">
-              <User className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
-              <input
-                id="login-username"
-                type="text"
-                autoComplete="username"
-                className="input-field pl-9"
-                placeholder="请输入管理员用户名"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                required
-              />
-            </div>
-          </div>
-
-          <div>
             <label htmlFor="login-password" className="mb-1.5 block text-xs font-medium text-slate-700 dark:text-slate-300">
-              密码
+              管理员密码
             </label>
             <div className="relative">
               <Lock className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
@@ -100,8 +80,9 @@ export function LoginPage() {
                 id="login-password"
                 type="password"
                 autoComplete="current-password"
+                autoFocus
                 className="input-field pl-9"
-                placeholder="请输入密码"
+                placeholder="请输入管理员密码"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required

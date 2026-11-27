@@ -579,15 +579,6 @@ func (s *server) handleGetUserTrafficBreakdown(w http.ResponseWriter, r *http.Re
 }
 
 func (s *server) handleGetAdminTraffic(w http.ResponseWriter, r *http.Request, _ *auth.AdminClaims) {
-	adminName, err := s.store.GetSettingOrDefault(r.Context(), "admin_username", "admin")
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to get admin username")
-		return
-	}
-	if strings.TrimSpace(adminName) == "" {
-		adminName = "admin"
-	}
-
 	totalBytes, items, err := s.store.ListAdminNodeTraffic(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to get admin traffic breakdown")
@@ -598,7 +589,7 @@ func (s *server) handleGetAdminTraffic(w http.ResponseWriter, r *http.Request, _
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"username":    adminName,
+		"username":    "admin",
 		"total_bytes": totalBytes,
 		"items":       items,
 	})

@@ -52,7 +52,6 @@ func newTestEnv(t *testing.T, staticFS fs.FS, githubURL string) *testEnv {
 	t.Cleanup(func() { _ = st.Close() })
 
 	if err := st.SeedDefaults(ctx, store.SeedConfig{
-		AdminUser:        "admin",
 		AdminInitialPass: "testpass123",
 		JWTSecret:        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	}); err != nil {
@@ -146,18 +145,16 @@ func (e *testEnv) do(method, path, bearer string, body any) (int, http.Header, [
 	return resp.StatusCode, resp.Header, raw
 }
 
-func (e *testEnv) mustLogin(username, password string) string {
+func (e *testEnv) mustLogin(_, password string) string {
 	e.t.Helper()
 	st, _, raw := e.do(http.MethodPost, "/api/v1/auth/login", "", map[string]string{
-		"username": username,
 		"password": password,
 	})
 	if st != http.StatusOK {
 		e.t.Fatalf("login failed: status=%d body=%s", st, string(raw))
 	}
 	var out struct {
-		Token    string `json:"token"`
-		Username string `json:"username"`
+		Token string `json:"token"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
 		e.t.Fatalf("unmarshal login: %v", err)
@@ -213,14 +210,18 @@ func TestHealthAndAuth(t *testing.T) {
 	}
 
 	// Wrong credentials -> 401
-	st, _, _ = env.do(http.MethodPost, "/api/v1/auth/login", "", map[string]string{"username": "admin", "password": "wrong"})
+	st, _, _ = env.do(http.MethodPost, "/api/v1/auth/login", "", map[string]string{"password": "wrong"})
 	if st != http.StatusUnauthorized {
 		t.Fatalf("expected 401 on wrong password, got %d", st)
+	}
+	st, _, _ = env.do(http.MethodPost, "/api/v1/auth/login", "", map[string]string{"password": ""})
+	if st != http.StatusUnauthorized {
+		t.Fatalf("expected 401 on empty password, got %d", st)
 	}
 
 	// Valid /auth/me
 	st, _, raw = env.do(http.MethodGet, "/api/v1/auth/me", env.jwt, nil)
-	if st != http.StatusOK || !strings.Contains(string(raw), `"admin"`) {
+	if st != http.StatusOK || !strings.Contains(string(raw), `"authenticated":true`) {
 		t.Fatalf("unexpected /auth/me: st=%d body=%s", st, string(raw))
 	}
 
@@ -261,7 +262,7 @@ func TestHealthAndAuth(t *testing.T) {
 		t.Fatalf("expected 200 on password change, got %d", st)
 	}
 
-	st, _, _ = env.do(http.MethodPost, "/api/v1/auth/login", "", map[string]string{"username": "admin", "password": "testpass123"})
+	st, _, _ = env.do(http.MethodPost, "/api/v1/auth/login", "", map[string]string{"password": "testpass123"})
 	if st != http.StatusUnauthorized {
 		t.Fatalf("expected old password rejected after change, got %d", st)
 	}
@@ -409,9 +410,14 @@ func TestNodesCRUDValidationActionsAndSync(t *testing.T) {
 	if st != http.StatusOK {
 		t.Fatalf("install-cmd failed: %d %s", st, string(raw))
 	}
-	for _, want := range []string{created1.NodeToken, "PANEL_URL", "NODE_TOKEN", "TZ=Asia/Shanghai", "network_mode: host"} {
+	for _, want := range []string{created1.NodeToken, "PANEL_URL", "NODE_TOKEN", "TZ=Asia/Shanghai", "network_mode: host", "node-agent", "/opt/node-agent:/var/lib/node-agent"} {
 		if !strings.Contains(string(raw), want) {
 			t.Fatalf("install-cmd missing %q: %s", want, string(raw))
+		}
+	}
+	for _, banned := range []string{"snell-agent", "/var/lib/snell-panel-agent"} {
+		if strings.Contains(string(raw), banned) {
+			t.Fatalf("install-cmd must not contain %q: %s", banned, string(raw))
 		}
 	}
 

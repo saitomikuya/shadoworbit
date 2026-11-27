@@ -103,9 +103,8 @@ func TestBcryptPasswordAndLogin(t *testing.T) {
 		}
 	}
 
-	// Login & ChangePassword on mock store.
+	// Login & ChangePassword on mock store (password-only, no admin_username needed).
 	ms := newMockSettingsStore()
-	_ = ms.SetSetting(ctx, SettingAdminUsername, "admin")
 	_ = ms.SetSetting(ctx, SettingAdminPasswordHash, hMin)
 
 	svc, err := NewService(ctx, ms, Config{BcryptCost: bcrypt.MinCost})
@@ -113,33 +112,30 @@ func TestBcryptPasswordAndLogin(t *testing.T) {
 		t.Fatalf("NewService failed: %v", err)
 	}
 
-	tok, err := svc.Login(ctx, "admin", "pass123")
+	tok, err := svc.Login(ctx, "pass123")
 	if err != nil || tok == "" {
 		t.Fatalf("Login failed: tok=%q err=%v", tok, err)
 	}
-	if _, err := svc.Login(ctx, "wronguser", "pass123"); !errors.Is(err, ErrInvalidCredentials) {
-		t.Fatalf("expected ErrInvalidCredentials on wrong username, got %v", err)
-	}
-	if _, err := svc.Login(ctx, "admin", "wrongpass"); !errors.Is(err, ErrInvalidCredentials) {
+	if _, err := svc.Login(ctx, "wrongpass"); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("expected ErrInvalidCredentials on wrong password, got %v", err)
 	}
-	if _, err := svc.Login(ctx, "", ""); !errors.Is(err, ErrInvalidCredentials) {
+	if _, err := svc.Login(ctx, ""); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("expected ErrInvalidCredentials on empty login, got %v", err)
 	}
 
-	if err := svc.ChangePassword(ctx, "admin", "wrongold", "newpass"); !errors.Is(err, ErrInvalidCredentials) {
+	if err := svc.ChangePassword(ctx, "wrongold", "newpass"); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("expected ErrInvalidCredentials on wrong old password, got %v", err)
 	}
-	if err := svc.ChangePassword(ctx, "admin", "pass123", ""); !errors.Is(err, ErrEmptyPassword) {
+	if err := svc.ChangePassword(ctx, "pass123", ""); !errors.Is(err, ErrEmptyPassword) {
 		t.Fatalf("expected ErrEmptyPassword on empty new password, got %v", err)
 	}
-	if err := svc.ChangePassword(ctx, "admin", "pass123", "newStrongPass!"); err != nil {
+	if err := svc.ChangePassword(ctx, "pass123", "newStrongPass!"); err != nil {
 		t.Fatalf("ChangePassword failed: %v", err)
 	}
-	if _, err := svc.Login(ctx, "admin", "pass123"); !errors.Is(err, ErrInvalidCredentials) {
+	if _, err := svc.Login(ctx, "pass123"); !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatal("old password should fail after ChangePassword")
 	}
-	if _, err := svc.Login(ctx, "admin", "newStrongPass!"); err != nil {
+	if _, err := svc.Login(ctx, "newStrongPass!"); err != nil {
 		t.Fatalf("new password login failed: %v", err)
 	}
 }
@@ -258,7 +254,6 @@ func TestJWTSecretPersistenceWithRealStoreAndConcurrency(t *testing.T) {
 	defer st.Close()
 
 	if err := st.SeedDefaults(ctx, store.SeedConfig{
-		AdminUser:        "admin",
 		AdminInitialPass: "initial123",
 	}); err != nil {
 		t.Fatalf("SeedDefaults failed: %v", err)
@@ -269,7 +264,7 @@ func TestJWTSecretPersistenceWithRealStoreAndConcurrency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewService 1 failed: %v", err)
 	}
-	jwt1, err := svc1.Login(ctx, "admin", "initial123")
+	jwt1, err := svc1.Login(ctx, "initial123")
 	if err != nil {
 		t.Fatalf("Login against real store failed: %v", err)
 	}
@@ -781,18 +776,13 @@ func TestTier5_AuthAdversarial_AADSwapCorruptSecretAndJWTRejection(t *testing.T)
 		t.Fatalf("expected ErrInvalidToken for alg=RS256 token, got %v", err)
 	}
 
-	// 4. Changing admin_username invalidates Authenticate for old username.
+	// 4. Password-only login works regardless of any legacy admin_username setting.
 	hash, err := svc.HashPassword("pass12345")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = ms.SetSetting(ctx, SettingAdminUsername, "admin")
 	_ = ms.SetSetting(ctx, SettingAdminPasswordHash, hash)
-	if _, err := svc.Login(ctx, "admin", "pass12345"); err != nil {
-		t.Fatalf("expected initial admin login ok: %v", err)
-	}
-	_ = ms.SetSetting(ctx, SettingAdminUsername, "superadmin")
-	if _, err := svc.Login(ctx, "admin", "pass12345"); !errors.Is(err, ErrInvalidCredentials) {
-		t.Fatalf("expected ErrInvalidCredentials after ADMIN_USER change, got %v", err)
+	if _, err := svc.Login(ctx, "pass12345"); err != nil {
+		t.Fatalf("expected password-only login ok: %v", err)
 	}
 }

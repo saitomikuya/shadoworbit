@@ -197,6 +197,8 @@ export function StatusPage() {
     let totalRxBps = 0;
     let totalTxBps = 0;
     let totalUsedBytes = 0;
+    let totalCumulativeRxBytes = 0;
+    let totalCumulativeTxBytes = 0;
     for (const n of nodes) {
       if (n.status === 'online') online++;
       else if (n.status === 'traffic_paused') paused++;
@@ -204,8 +206,21 @@ export function StatusPage() {
       totalRxBps += n.rx_bps || 0;
       totalTxBps += n.tx_bps || 0;
       totalUsedBytes += n.traffic_used_bytes || 0;
+      totalCumulativeRxBytes += n.total_rx_bytes || 0;
+      totalCumulativeTxBytes += n.total_tx_bytes || 0;
     }
-    return { total: nodes.length, online, paused, offline, totalRxBps, totalTxBps, totalUsedBytes };
+    return {
+      total: nodes.length,
+      online,
+      paused,
+      offline,
+      totalRxBps,
+      totalTxBps,
+      totalUsedBytes,
+      totalCumulativeRxBytes,
+      totalCumulativeTxBytes,
+      totalCumulativeBytes: totalCumulativeRxBytes + totalCumulativeTxBytes,
+    };
   }, [snapshot]);
 
   const siteTitle = snapshot?.site_title || 'ShadowOrbit';
@@ -286,7 +301,7 @@ export function StatusPage() {
         )}
 
         {/* Summary KPI Grid */}
-        <section className="grid grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-4">
+        <section className="grid grid-cols-2 gap-3 lg:grid-cols-5 sm:gap-4">
           <div className="card p-4">
             <p className="text-xs font-medium text-slate-500 dark:text-slate-400">在线节点</p>
             <div className="mt-1.5 flex items-baseline gap-2">
@@ -325,6 +340,18 @@ export function StatusPage() {
             </p>
             <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">
               {pctOnly ? '仅百分比模式' : '全部启用节点汇总'}
+            </p>
+          </div>
+
+          <div className="card col-span-2 p-4 lg:col-span-1">
+            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">累计总流量</p>
+            <p className="mt-1.5 font-mono text-lg font-bold text-slate-900 dark:text-white sm:text-xl">
+              {pctOnly ? '已隐藏' : formatBytes(stats.totalCumulativeBytes)}
+            </p>
+            <p className="mt-0.5 truncate font-mono text-[11px] text-slate-500 dark:text-slate-400">
+              {pctOnly
+                ? '仅百分比模式'
+                : `↓ ${formatBytes(stats.totalCumulativeRxBytes)} / ↑ ${formatBytes(stats.totalCumulativeTxBytes)}`}
             </p>
           </div>
         </section>

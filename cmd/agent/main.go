@@ -103,7 +103,7 @@ func ParseConfig(args []string, getenv func(string) string) (Config, error) {
 	cfg := Config{
 		PanelURL:         strings.TrimSpace(getenv("PANEL_URL")),
 		NodeToken:        strings.TrimSpace(getenv("NODE_TOKEN")),
-		DataDir:          envOrDefault("DATA_DIR", "/var/lib/snell-panel-agent"),
+		DataDir:          envOrDefault("DATA_DIR", "/var/lib/node-agent"),
 		Iface:            strings.TrimSpace(getenv("IFACE")),
 		SnellBin:         envOrDefault("SNELL_BIN", "snell-server"),
 		ShadowTLSBin:     envOrDefault("SHADOW_TLS_BIN", "shadow-tls"),
@@ -275,7 +275,7 @@ func runWithOptions(
 		stdout = io.Discard
 	}
 	if cfg.ShowVersion {
-		_, err := fmt.Fprintf(stdout, "snell-agent version=%s commit=%s date=%s\n", version, commit, date)
+		_, err := fmt.Fprintf(stdout, "node-agent version=%s commit=%s date=%s\n", version, commit, date)
 		return err
 	}
 

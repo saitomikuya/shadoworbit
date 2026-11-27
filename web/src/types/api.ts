@@ -58,17 +58,15 @@ export interface PublicStatusSnapshot {
 }
 
 export interface LoginRequest {
-  username: string;
   password: string;
 }
 
 export interface LoginResponse {
   token: string;
-  username: string;
 }
 
 export interface AuthMeResponse {
-  username: string;
+  authenticated: boolean;
 }
 
 export interface ChangePasswordRequest {

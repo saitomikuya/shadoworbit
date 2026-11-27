@@ -920,17 +920,17 @@ func (s *server) handleNodeInstallCmd(w http.ResponseWriter, r *http.Request, _ 
 		agentImage = "saitomikuya/shadoworbit-agent:latest"
 	}
 	dockerRun := fmt.Sprintf(
-		"docker run -d --name snell-agent --restart always --network host -v /opt/snell-agent:/var/lib/snell-panel-agent -e PANEL_URL=%q -e NODE_TOKEN=%q -e TZ=Asia/Shanghai %s",
+		"docker run -d --name node-agent --restart always --network host -v /opt/node-agent:/var/lib/node-agent -e PANEL_URL=%q -e NODE_TOKEN=%q -e TZ=Asia/Shanghai %s",
 		panelURL, rawToken, agentImage,
 	)
 	dockerCompose := fmt.Sprintf(`services:
-  snell-agent:
+  node-agent:
     image: %s
-    container_name: snell-agent
+    container_name: node-agent
     restart: always
     network_mode: host
     volumes:
-      - /opt/snell-agent:/var/lib/snell-panel-agent
+      - /opt/node-agent:/var/lib/node-agent
     environment:
       - PANEL_URL=%s
       - NODE_TOKEN=%s

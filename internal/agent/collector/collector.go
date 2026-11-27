@@ -23,7 +23,7 @@ import (
 )
 
 const (
-	defaultDataDir          = "/var/lib/snell-panel-agent"
+	defaultDataDir          = "/var/lib/node-agent"
 	defaultProcRoot         = "/proc"
 	defaultProcNetDevPath   = "/proc/net/dev"
 	defaultProcNetRoutePath = "/proc/net/route"

@@ -72,7 +72,6 @@ services:
       - ./data:/app/data
     environment:
       - TZ=Asia/Shanghai
-      - ADMIN_USER=admin
       - ADMIN_INITIAL_PASS=change_me_on_first_login
       # 可选配置：
       # - LISTEN_ADDR=:8080
@@ -105,7 +104,6 @@ docker compose up -d
 | `LISTEN_ADDR` | `-listen` | `:8080` | HTTP / WebSocket 监听地址（优先于 `PORT`） |
 | `PORT` | — | `—` | 当 `LISTEN_ADDR` 为空时的兜底端口（自动规范为 `:<PORT>`） |
 | `DB_PATH` | `-db` | `./data/panel.db` | SQLite 数据库文件路径（Docker 内为 `/app/data/panel.db`） |
-| `ADMIN_USER` | `-admin-user` | `admin` | 首次启动初始化的管理员用户名 |
 | `ADMIN_INITIAL_PASS` | `-admin-pass` | `admin123` | 当数据库尚未设置密码哈希时使用的初始管理员密码 |
 | `JWT_SECRET` | `-jwt-secret` | 自动生成 | 可选 JWT 签名密钥（至少 32 字节原始/Base64/Hex）；缺省则自动生成并持久化到 SQLite |
 | `GITHUB_API_URL` | `-github-api-url` | `https://api.github.com` | 可选 GitHub Releases API 代理/镜像根地址 |
@@ -154,7 +152,7 @@ server {
 
 ### 二、部署节点端（Node Agent）
 
-节点端需使用 `--network host`（`network_mode: host`），以便动态接管配置的监听端口并准确读取宿主机 `/proc/net/dev` 网卡计数器；持久化目录 `/var/lib/snell-panel-agent` 用于保存离线配置与流量 WAL。
+节点端需使用 `--network host`（`network_mode: host`），以便动态接管配置的监听端口并准确读取宿主机 `/proc/net/dev` 网卡计数器；持久化目录 `/var/lib/node-agent` 用于保存离线配置与流量 WAL。
 
 在管理端「节点管理」创建节点后，可直接复制页面生成的安装命令；也可手动通过以下命令部署（使用官方多架构镜像 `saitomikuya/shadoworbit-agent:latest`）：
 
@@ -162,10 +160,10 @@ server {
 
 ```bash
 docker run -d \
-  --name shadoworbit-agent \
+  --name node-agent \
   --restart always \
   --network host \
-  -v /opt/shadoworbit-agent:/var/lib/snell-panel-agent \
+  -v /opt/node-agent:/var/lib/node-agent \
   -e PANEL_URL="wss://panel.example.com" \
   -e NODE_TOKEN="nd_live_xxxxxxxxxxxx" \
   -e TZ="Asia/Shanghai" \
@@ -176,13 +174,13 @@ docker run -d \
 
 ```yaml
 services:
-  shadoworbit-agent:
+  node-agent:
     image: saitomikuya/shadoworbit-agent:latest
-    container_name: shadoworbit-agent
+    container_name: node-agent
     restart: always
     network_mode: host
     volumes:
-      - /opt/shadoworbit-agent:/var/lib/snell-panel-agent
+      - /opt/node-agent:/var/lib/node-agent
     environment:
       - PANEL_URL=wss://panel.example.com
       - NODE_TOKEN=nd_live_xxxxxxxxxxxx
@@ -195,7 +193,7 @@ services:
 | :--- | :--- | :--- | :--- |
 | `PANEL_URL` | `-panel-url` | 必填 | 管理端地址（支持 `ws://` / `wss://` / `http://` / `https://`，自动拼接 `/api/v1/agent/ws`） |
 | `NODE_TOKEN` | `-token` | 必填 | 节点连接令牌（`nd_live_...`） |
-| `DATA_DIR` | `-data-dir` | `/var/lib/snell-panel-agent` | 状态与内核配置持久化目录（含 `last_config.json`、`pending_traffic.json` 等） |
+| `DATA_DIR` | `-data-dir` | `/var/lib/node-agent` | 状态与内核配置持久化目录（含 `last_config.json`、`pending_traffic.json` 等） |
 | `IFACE` | `-iface` | 自动探测默认路由网卡 | 手动指定 `/proc/net/dev` 流量统计网卡名 |
 | `SNELL_BIN` | `-snell-bin` | `snell-server` | `snell-server` 可执行文件路径或命令名 |
 | `SHADOW_TLS_BIN` | `-shadow-tls-bin` | `shadow-tls` | `shadow-tls` 可执行文件路径或命令名 |

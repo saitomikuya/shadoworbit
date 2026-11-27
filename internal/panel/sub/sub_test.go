@@ -32,7 +32,6 @@ func openTestStore(t *testing.T) *store.Store {
 		_ = st.Close()
 	})
 	if err := st.SeedDefaults(ctx, store.SeedConfig{
-		AdminUser:        "admin",
 		AdminInitialPass: "admin123456",
 	}); err != nil {
 		t.Fatalf("SeedDefaults failed: %v", err)

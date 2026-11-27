@@ -38,7 +38,6 @@ var (
 type Config struct {
 	ListenAddr             string
 	DBPath                 string
-	AdminUser              string
 	AdminInitialPass       string
 	JWTSecret              string
 	GitHubAPIURL           string
@@ -83,7 +82,6 @@ func ParseConfig(args []string, getenv func(string) string) (Config, error) {
 	cfg := Config{
 		ListenAddr:             defaultListen,
 		DBPath:                 envOrDefault("DB_PATH", "./data/panel.db"),
-		AdminUser:              envOrDefault("ADMIN_USER", "admin"),
 		AdminInitialPass:       getenv("ADMIN_INITIAL_PASS"),
 		JWTSecret:              getenv("JWT_SECRET"),
 		GitHubAPIURL:           strings.TrimSpace(getenv("GITHUB_API_URL")),
@@ -94,7 +92,6 @@ func ParseConfig(args []string, getenv func(string) string) (Config, error) {
 	fsFlag.SetOutput(io.Discard)
 	fsFlag.StringVar(&cfg.ListenAddr, "listen", cfg.ListenAddr, "HTTP listen address")
 	fsFlag.StringVar(&cfg.DBPath, "db", cfg.DBPath, "SQLite database path")
-	fsFlag.StringVar(&cfg.AdminUser, "admin-user", cfg.AdminUser, "initial admin username")
 	fsFlag.StringVar(&cfg.AdminInitialPass, "admin-pass", cfg.AdminInitialPass, "initial admin password")
 	fsFlag.StringVar(&cfg.JWTSecret, "jwt-secret", cfg.JWTSecret, "optional JWT signing secret")
 	fsFlag.StringVar(&cfg.GitHubAPIURL, "github-api-url", cfg.GitHubAPIURL, "optional GitHub API base URL override")
@@ -147,7 +144,6 @@ func runWithReadyAndFS(ctx context.Context, cfg Config, staticFS fs.FS, stdout i
 	defer st.Close()
 
 	if err := st.SeedDefaults(ctx, store.SeedConfig{
-		AdminUser:        cfg.AdminUser,
 		AdminInitialPass: cfg.AdminInitialPass,
 		JWTSecret:        cfg.JWTSecret,
 	}); err != nil {

@@ -7,10 +7,9 @@ import {
 } from '../api/client';
 
 interface AuthContextValue {
-  username: string | null;
   loading: boolean;
   isAuthenticated: boolean;
-  login: (username: string, password: string) => Promise<void>;
+  login: (password: string) => Promise<void>;
   logout: () => void;
   refreshSession: () => Promise<void>;
 }
@@ -18,27 +17,27 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [username, setUsername] = useState<string | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
   const [loading, setLoading] = useState<boolean>(true);
 
   const logout = useCallback(() => {
     setStoredToken(null);
-    setUsername(null);
+    setIsAuthenticated(false);
   }, []);
 
   const refreshSession = useCallback(async () => {
     const token = getStoredToken();
     if (!token) {
-      setUsername(null);
+      setIsAuthenticated(false);
       setLoading(false);
       return;
     }
     try {
-      const me = await api.getMe();
-      setUsername(me.username);
+      await api.getMe();
+      setIsAuthenticated(true);
     } catch {
       setStoredToken(null);
-      setUsername(null);
+      setIsAuthenticated(false);
     } finally {
       setLoading(false);
     }
@@ -46,24 +45,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     setUnauthorizedHandler(() => {
-      setUsername(null);
+      setIsAuthenticated(false);
     });
     void refreshSession();
     return () => setUnauthorizedHandler(null);
   }, [refreshSession]);
 
-  const login = useCallback(async (user: string, password: string) => {
-    const res = await api.login({ username: user, password });
+  const login = useCallback(async (password: string) => {
+    const res = await api.login({ password });
     setStoredToken(res.token);
-    setUsername(res.username);
+    setIsAuthenticated(true);
   }, []);
 
   return (
     <AuthContext.Provider
       value={{
-        username,
         loading,
-        isAuthenticated: Boolean(username),
+        isAuthenticated,
         login,
         logout,
         refreshSession,

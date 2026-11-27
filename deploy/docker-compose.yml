@@ -9,7 +9,6 @@ services:
       - ./data:/app/data
     environment:
       - TZ=Asia/Shanghai
-      - ADMIN_USER=admin
       - ADMIN_INITIAL_PASS=change_me_on_first_login
       # Optional runtime configuration:
       # - LISTEN_ADDR=:8080

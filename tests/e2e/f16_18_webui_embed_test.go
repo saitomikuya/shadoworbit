@@ -636,7 +636,7 @@ func TestF17_Tier1_AdminLoginMeAndSettingsReflected(t *testing.T) {
 
 	jwt := client.MustLogin(t, "admin", "change_me_on_first_login")
 	st, me, _, err := client.GetMe(jwt)
-	if err != nil || st != http.StatusOK || me.Username != "admin" {
+	if err != nil || st != http.StatusOK || !me.Authenticated {
 		t.Fatalf("GetMe failed: st=%d me=%+v err=%v", st, me, err)
 	}
 

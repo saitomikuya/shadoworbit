@@ -34,7 +34,7 @@ const NAV_ITEMS = [
 ];
 
 export function AdminLayout() {
-  const { username, logout } = useAuth();
+  const { logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const toast = useToast();
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -191,10 +191,6 @@ export function AdminLayout() {
                 ShadowOrbit
               </span>
             </div>
-            <span className="hidden truncate text-xs font-medium text-slate-500 dark:text-slate-400 sm:inline">
-              <span className="lg:inline">当前登录：</span>
-              <strong className="text-slate-800 dark:text-slate-200">{username}</strong>
-            </span>
           </div>
 
           <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">

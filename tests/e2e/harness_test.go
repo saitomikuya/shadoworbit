@@ -371,7 +371,6 @@ func NewTestEnv(t *testing.T) *TestEnv {
 type PanelConfig struct {
 	ListenAddr   string
 	DBPath       string
-	AdminUser    string
 	AdminPass    string
 	JWTSecret    string
 	TZ           string
@@ -407,9 +406,6 @@ func StartPanel(env *TestEnv, cfg PanelConfig) *PanelProcess {
 	if cfg.DBPath == "" {
 		cfg.DBPath = filepath.Join(env.RootDir, "data", "panel.db")
 	}
-	if cfg.AdminUser == "" {
-		cfg.AdminUser = "admin"
-	}
 	if cfg.AdminPass == "" {
 		cfg.AdminPass = "change_me_on_first_login"
 	}
@@ -420,13 +416,11 @@ func StartPanel(env *TestEnv, cfg PanelConfig) *PanelProcess {
 	args := []string{
 		"-listen", cfg.ListenAddr,
 		"-db", cfg.DBPath,
-		"-admin-user", cfg.AdminUser,
 		"-admin-pass", cfg.AdminPass,
 	}
 	envOverrides := map[string]string{
 		"LISTEN_ADDR":        cfg.ListenAddr,
 		"DB_PATH":            cfg.DBPath,
-		"ADMIN_USER":         cfg.AdminUser,
 		"ADMIN_INITIAL_PASS": cfg.AdminPass,
 	}
 	if cfg.JWTSecret != "" {
@@ -519,9 +513,6 @@ func StartPanelExpectFail(env *TestEnv, cfg PanelConfig, timeout time.Duration) 
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = fmt.Sprintf("127.0.0.1:%d", AllocFreePort(env.T))
 	}
-	if cfg.AdminUser == "" {
-		cfg.AdminUser = "admin"
-	}
 	if cfg.AdminPass == "" {
 		cfg.AdminPass = "change_me_on_first_login"
 	}
@@ -532,13 +523,11 @@ func StartPanelExpectFail(env *TestEnv, cfg PanelConfig, timeout time.Duration) 
 	args := []string{
 		"-listen", cfg.ListenAddr,
 		"-db", cfg.DBPath,
-		"-admin-user", cfg.AdminUser,
 		"-admin-pass", cfg.AdminPass,
 	}
 	envOverrides := map[string]string{
 		"LISTEN_ADDR":        cfg.ListenAddr,
 		"DB_PATH":            cfg.DBPath,
-		"ADMIN_USER":         cfg.AdminUser,
 		"ADMIN_INITIAL_PASS": cfg.AdminPass,
 	}
 	if cfg.JWTSecret != "" {
@@ -1128,12 +1117,11 @@ type PublicStatusSnapshotDTO struct {
 }
 
 type LoginResponseDTO struct {
-	Token    string `json:"token"`
-	Username string `json:"username"`
+	Token string `json:"token"`
 }
 
 type AuthMeResponseDTO struct {
-	Username string `json:"username"`
+	Authenticated bool `json:"authenticated"`
 }
 
 type NodeDTO struct {
@@ -1344,10 +1332,9 @@ func (c *PanelClient) DoJSON(ctx context.Context, method, path, bearerToken stri
 	return status, raw, nil
 }
 
-func (c *PanelClient) Login(username, password string) (int, LoginResponseDTO, []byte, error) {
+func (c *PanelClient) Login(_, password string) (int, LoginResponseDTO, []byte, error) {
 	var out LoginResponseDTO
 	status, raw, err := c.DoJSON(context.Background(), http.MethodPost, "/api/v1/auth/login", "", map[string]string{
-		"username": username,
 		"password": password,
 	}, &out)
 	return status, out, raw, err

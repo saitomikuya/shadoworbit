@@ -215,7 +215,6 @@ func TestTier5_EvaluateUsers_ColdStartAndSeededDefaultsBugB1(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t)
 	if err := st.SeedDefaults(ctx, store.SeedConfig{
-		AdminUser:        "admin",
 		AdminInitialPass: "pass12345",
 		JWTSecret:        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	}); err != nil {

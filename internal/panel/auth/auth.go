@@ -15,8 +15,8 @@ const (
 	DefaultJWTIssuer  = "snell-panel"
 	DefaultJWTTTL     = 24 * time.Hour
 	MaxBcryptPassword = 72 // bcrypt hard input limit
+	DefaultAdminSubject = "admin"
 
-	SettingAdminUsername     = "admin_username"
 	SettingAdminPasswordHash = "admin_password_hash"
 	SettingJWTSecret         = "jwt_secret"
 )

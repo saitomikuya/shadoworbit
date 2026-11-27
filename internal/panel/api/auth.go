@@ -8,13 +8,11 @@ import (
 )
 
 type loginRequest struct {
-	Username string `json:"username"`
 	Password string `json:"password"`
 }
 
 type loginResponse struct {
-	Token    string `json:"token"`
-	Username string `json:"username"`
+	Token string `json:"token"`
 }
 
 type changePasswordRequest struct {
@@ -29,7 +27,7 @@ func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := s.auth.Login(r.Context(), req.Username, req.Password)
+	token, err := s.auth.Login(r.Context(), req.Password)
 	if err != nil {
 		if errors.Is(err, auth.ErrInvalidCredentials) {
 			writeError(w, http.StatusUnauthorized, "invalid credentials")
@@ -40,25 +38,24 @@ func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, loginResponse{
-		Token:    token,
-		Username: req.Username,
+		Token: token,
 	})
 }
 
-func (s *server) handleAuthMe(w http.ResponseWriter, _ *http.Request, claims *auth.AdminClaims) {
-	writeJSON(w, http.StatusOK, map[string]string{
-		"username": claims.Username,
+func (s *server) handleAuthMe(w http.ResponseWriter, _ *http.Request, _ *auth.AdminClaims) {
+	writeJSON(w, http.StatusOK, map[string]bool{
+		"authenticated": true,
 	})
 }
 
-func (s *server) handleChangePassword(w http.ResponseWriter, r *http.Request, claims *auth.AdminClaims) {
+func (s *server) handleChangePassword(w http.ResponseWriter, r *http.Request, _ *auth.AdminClaims) {
 	var req changePasswordRequest
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON payload")
 		return
 	}
 
-	err := s.auth.ChangePassword(r.Context(), claims.Username, req.OldPassword, req.NewPassword)
+	err := s.auth.ChangePassword(r.Context(), req.OldPassword, req.NewPassword)
 	if err != nil {
 		switch {
 		case errors.Is(err, auth.ErrInvalidCredentials):

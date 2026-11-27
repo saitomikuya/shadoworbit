@@ -17,7 +17,6 @@ import (
 
 // SeedConfig controls initial insert-if-missing database seeding on startup.
 type SeedConfig struct {
-	AdminUser        string // defaults to "admin" if empty
 	AdminInitialPass string // defaults to "admin123" if empty
 	JWTSecret        string // optional; random 32-byte base64 generated if empty & unset in DB
 }
@@ -31,10 +30,6 @@ func (s *Store) SeedDefaults(ctx context.Context, cfg SeedConfig) error {
 		}
 	}
 
-	adminUser := cfg.AdminUser
-	if adminUser == "" {
-		adminUser = "admin"
-	}
 	adminPass := cfg.AdminInitialPass
 	if adminPass == "" {
 		adminPass = "admin123"
@@ -94,7 +89,6 @@ func (s *Store) SeedDefaults(ctx context.Context, cfg SeedConfig) error {
 			key   string
 			value string
 		}{
-			{"admin_username", adminUser},
 			{"admin_sub_token", "adm_" + adminSubToken},
 			{"jwt_secret", jwtSecret},
 			{"site_title", "ShadowOrbit"},

@@ -764,7 +764,7 @@ func TestTier3_F03_F09_AdminPasswordRotationAndAgentWSAuth(t *testing.T) {
 		t.Fatalf("expected tampered JWT rejected with 401, got %d", badSt)
 	}
 	jwt2 := client.MustLogin(t, "admin", "t3_rotated_pass_2026")
-	if meSt, me, _, err := client.GetMe(jwt2); err != nil || meSt != http.StatusOK || me.Username != "admin" {
+	if meSt, me, _, err := client.GetMe(jwt2); err != nil || meSt != http.StatusOK || !me.Authenticated {
 		t.Fatalf("GetMe with rotated JWT failed: st=%d me=%+v err=%v", meSt, me, err)
 	}
 
@@ -2229,10 +2229,10 @@ func TestTier3_F19_F20_DeployEnvPortsMatchReadmeAndCI(t *testing.T) {
 	if !strings.Contains(panelDF, "8080") || !strings.Contains(readme, "8080") || !strings.Contains(readme, "./data") {
 		t.Fatalf("port 8080 or ./data volume missing across Dockerfile.panel / README.md")
 	}
-	if !strings.Contains(agentDF, "/var/lib/snell-panel-agent") || !strings.Contains(readme, "/var/lib/snell-panel-agent") {
-		t.Fatalf("/var/lib/snell-panel-agent missing across Dockerfile.agent / README.md")
+	if !strings.Contains(agentDF, "/var/lib/node-agent") || !strings.Contains(readme, "/var/lib/node-agent") {
+		t.Fatalf("/var/lib/node-agent missing across Dockerfile.agent / README.md")
 	}
-	for _, envKey := range []string{"ADMIN_USER", "ADMIN_INITIAL_PASS", "PANEL_URL", "NODE_TOKEN", "TZ"} {
+	for _, envKey := range []string{"ADMIN_INITIAL_PASS", "PANEL_URL", "NODE_TOKEN", "TZ"} {
 		if !strings.Contains(readme, envKey) {
 			t.Fatalf("README.md missing documented env var %q", envKey)
 		}

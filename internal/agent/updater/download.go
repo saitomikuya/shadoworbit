@@ -39,7 +39,7 @@ func (u *Updater) downloadArtifact(
 	if err != nil {
 		return downloadResult{}, fmt.Errorf("updater: build download request: %w", err)
 	}
-	httpReq.Header.Set("User-Agent", "snell-panel-agent/1.0")
+	httpReq.Header.Set("User-Agent", "node-agent/1.0")
 
 	resp, err := u.opts.HTTPClient.Do(httpReq)
 	if err != nil {

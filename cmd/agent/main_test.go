@@ -179,7 +179,7 @@ func TestParseConfig(t *testing.T) {
 		if err := run(context.Background(), cfg, &out); err != nil {
 			t.Fatalf("run -version failed: %v", err)
 		}
-		if !strings.Contains(out.String(), "snell-agent version=") {
+		if !strings.Contains(out.String(), "node-agent version=") {
 			t.Fatalf("unexpected version output: %q", out.String())
 		}
 	})
@@ -984,7 +984,7 @@ checkedMetrics:
 }
 
 func TestAgentBinarySIGTERMSignalShutdown(t *testing.T) {
-	binPath := filepath.Join(t.TempDir(), "snell-agent-test")
+	binPath := filepath.Join(t.TempDir(), "node-agent-test")
 	buildCmd := exec.Command("go", "build", "-o", binPath, ".")
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build cmd/agent failed: %v\n%s", err, string(out))

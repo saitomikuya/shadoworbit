@@ -329,7 +329,6 @@ export function UsersPage() {
     ? buildAdminSubUrl(adminSubToken, adminMode, adminTplId ? Number(adminTplId) : null)
     : '';
   const snellNodesCount = nodes.filter((n) => n.enabled && n.snell_config?.enabled).length;
-  const adminDisplayName = adminTraffic?.username || 'admin';
   const adminUsedBytes = adminTraffic?.total_bytes ?? 0;
 
   const matchingTemplates = templates.filter((t) =>
@@ -395,7 +394,6 @@ export function UsersPage() {
           <div className="flex items-start justify-between gap-2">
             <div>
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-sm font-semibold text-slate-900 dark:text-white">{adminDisplayName}</span>
                 <span className="inline-flex items-center gap-1 rounded-md bg-indigo-100 px-2 py-0.5 text-[11px] font-semibold text-indigo-700 dark:bg-indigo-950/80 dark:text-indigo-300">
                   <Shield className="h-3 w-3" />
                   管理员
@@ -607,7 +605,6 @@ export function UsersPage() {
               <tr className="bg-indigo-50/40 hover:bg-indigo-50/70 dark:bg-indigo-950/20 dark:hover:bg-indigo-950/35">
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-2">
-                    <span className="font-semibold text-slate-900 dark:text-white">{adminDisplayName}</span>
                     <span className="inline-flex items-center gap-1 rounded-md bg-indigo-100 px-1.5 py-0.5 text-[11px] font-semibold text-indigo-700 dark:bg-indigo-950/80 dark:text-indigo-300">
                       <Shield className="h-3 w-3" />
                       管理员
@@ -817,7 +814,7 @@ export function UsersPage() {
       <Modal
         open={adminSubModalOpen}
         onClose={() => setAdminSubModalOpen(false)}
-        title={`管理员专属 Surge 订阅设置 — ${adminDisplayName}`}
+        title="管理员专属 Surge 订阅设置"
         subtitle="仅包含已启用 Snell + ShadowTLS v3 协议节点，不会下发给普通用户。"
         maxWidthClass="max-w-2xl"
         footer={
@@ -939,7 +936,7 @@ export function UsersPage() {
       <Modal
         open={adminBreakdownOpen}
         onClose={() => setAdminBreakdownOpen(false)}
-        title={`管理员节点流量明细 — ${adminDisplayName}`}
+        title="管理员节点流量明细"
         subtitle="基于各节点 snell-server 进程实际转发统计（按累计消耗由高到低排序）。"
         maxWidthClass="max-w-2xl"
         footer={

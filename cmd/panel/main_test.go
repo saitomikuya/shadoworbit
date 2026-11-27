@@ -28,7 +28,7 @@ func TestParseConfig(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParseConfig failed: %v", err)
 		}
-		if cfg.ListenAddr != ":8080" || cfg.DBPath != "./data/panel.db" || cfg.AdminUser != "admin" || cfg.WebhookBlockPrivateIPs {
+		if cfg.ListenAddr != ":8080" || cfg.DBPath != "./data/panel.db" || cfg.WebhookBlockPrivateIPs {
 			t.Fatalf("unexpected defaults: %+v", cfg)
 		}
 	})
@@ -62,7 +62,6 @@ func TestParseConfig(t *testing.T) {
 		env := map[string]string{
 			"LISTEN_ADDR":               ":9090",
 			"DB_PATH":                   "/tmp/env.db",
-			"ADMIN_USER":                "envadmin",
 			"ADMIN_INITIAL_PASS":        "envpass",
 			"JWT_SECRET":                "0123456789abcdef0123456789abcdef",
 			"GITHUB_API_URL":            "https://gh.example.com",
@@ -74,7 +73,7 @@ func TestParseConfig(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ParseConfig failed: %v", err)
 		}
-		if cfg.ListenAddr != "127.0.0.1:7070" || cfg.DBPath != "/tmp/flag.db" || cfg.AdminUser != "envadmin" || cfg.AdminInitialPass != "envpass" || cfg.GitHubAPIURL != "https://gh.example.com" || !cfg.WebhookBlockPrivateIPs {
+		if cfg.ListenAddr != "127.0.0.1:7070" || cfg.DBPath != "/tmp/flag.db" || cfg.AdminInitialPass != "envpass" || cfg.GitHubAPIURL != "https://gh.example.com" || !cfg.WebhookBlockPrivateIPs {
 			t.Fatalf("unexpected merged config: %+v", cfg)
 		}
 	})
@@ -122,7 +121,6 @@ func TestRunHealthzAndGracefulShutdown(t *testing.T) {
 	cfg := Config{
 		ListenAddr:       "127.0.0.1:0",
 		DBPath:           dbPath,
-		AdminUser:        "admin",
 		AdminInitialPass: "paneltestpass",
 	}
 
@@ -251,7 +249,6 @@ func TestRunWithEmbeddedDistFS(t *testing.T) {
 	cfg := Config{
 		ListenAddr:       "127.0.0.1:0",
 		DBPath:           dbPath,
-		AdminUser:        "admin",
 		AdminInitialPass: "paneltestpass",
 	}
 
@@ -405,7 +402,6 @@ func TestRunGracefulShutdownWithIdleStateNewConnection(t *testing.T) {
 	cfg := Config{
 		ListenAddr:       "127.0.0.1:0",
 		DBPath:           dbPath,
-		AdminUser:        "admin",
 		AdminInitialPass: "paneltestpass",
 	}
 
@@ -476,7 +472,6 @@ func TestTier5_Main_ParseConfigAndRunEdgeCases(t *testing.T) {
 	bindErr := runWithReady(ctx, Config{
 		ListenAddr: occupiedLn.Addr().String(),
 		DBPath:     filepath.Join(t.TempDir(), "bindfail.db"),
-		AdminUser:  "admin",
 	}, io.Discard, nil)
 	if bindErr == nil || !strings.Contains(bindErr.Error(), "listen") {
 		t.Fatalf("expected listen bind error, got %v", bindErr)
@@ -492,7 +487,6 @@ func TestTier5_Main_ParseConfigAndRunEdgeCases(t *testing.T) {
 		errCh <- runWithReady(runCtx, Config{
 			ListenAddr: "127.0.0.1:0",
 			DBPath:     filepath.Join(t.TempDir(), "ready.db"),
-			AdminUser:  "admin",
 		}, io.Discard, readyAddr)
 	}()
 
@@ -556,7 +550,6 @@ func TestRunGracefulShutdownUnderConcurrentWSAndStateActiveConn(t *testing.T) {
 	cfg := Config{
 		ListenAddr:       "127.0.0.1:0",
 		DBPath:           dbPath,
-		AdminUser:        "admin",
 		AdminInitialPass: "paneltestpass",
 	}
 
@@ -587,7 +580,7 @@ func TestRunGracefulShutdownUnderConcurrentWSAndStateActiveConn(t *testing.T) {
 	loginResp, err := httpClient.Post(
 		baseURL+"/api/v1/auth/login",
 		"application/json",
-		strings.NewReader(`{"username":"admin","password":"paneltestpass"}`),
+		strings.NewReader(`{"password":"paneltestpass"}`),
 	)
 	if err != nil {
 		t.Fatalf("login failed: %v", err)
@@ -704,7 +697,7 @@ func TestRunGracefulShutdownUnderConcurrentWSAndStateActiveConn(t *testing.T) {
 		t.Fatalf("dial StateActive conn: %v", err)
 	}
 	defer stateActiveConn.Close()
-	if _, err := stateActiveConn.Write([]byte("POST /api/v1/auth/login HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"username\":\"admin\"")); err != nil {
+	if _, err := stateActiveConn.Write([]byte("POST /api/v1/auth/login HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"password\":\"x\"")); err != nil {
 		t.Fatalf("write partial body request to trigger StateActive: %v", err)
 	}
 

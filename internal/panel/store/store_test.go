@@ -210,16 +210,11 @@ func TestSeedDefaultsIdempotent(t *testing.T) {
 	s := openTestStore(t)
 
 	if err := s.SeedDefaults(ctx, SeedConfig{
-		AdminUser:        "rootadmin",
 		AdminInitialPass: "s3cretPass!",
 	}); err != nil {
 		t.Fatalf("SeedDefaults failed: %v", err)
 	}
 
-	user, err := s.GetSetting(ctx, "admin_username")
-	if err != nil || user != "rootadmin" {
-		t.Fatalf("unexpected admin_username: %q, err=%v", user, err)
-	}
 	passHash, err := s.GetSetting(ctx, "admin_password_hash")
 	if err != nil {
 		t.Fatal(err)
@@ -282,7 +277,6 @@ func TestSeedDefaultsIdempotent(t *testing.T) {
 	}
 
 	if err := s.SeedDefaults(ctx, SeedConfig{
-		AdminUser:        "other",
 		AdminInitialPass: "otherPass",
 	}); err != nil {
 		t.Fatalf("second SeedDefaults failed: %v", err)
@@ -1265,7 +1259,6 @@ func TestTier5_StoreUncoveredCRUDAndBugB1B2Edges(t *testing.T) {
 
 	// 1. Bug BUG-B1: SeedDefaults explicitly seeds alert_user_expired & alert_user_quota_exhausted = "true".
 	if err := s.SeedDefaults(ctx, SeedConfig{
-		AdminUser:        "admin",
 		AdminInitialPass: "secret1234",
 		JWTSecret:        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
 	}); err != nil {

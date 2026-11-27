@@ -520,7 +520,7 @@ func TestF04_Tier1_CLIFlagAndEnvBootstrapAndVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("-version failed: err=%v out=%s", err, string(out))
 	}
-	if !strings.Contains(string(out), "snell-agent") || !strings.Contains(string(out), "version=") {
+	if !strings.Contains(string(out), "node-agent") || !strings.Contains(string(out), "version=") {
 		t.Fatalf("unexpected -version output: %q", string(out))
 	}
 
