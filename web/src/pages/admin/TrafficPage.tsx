@@ -85,10 +85,10 @@ export function TrafficPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="admin-sticky-header flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold text-slate-900 dark:text-white">节点流量明细日志</h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400">
+          <p className="hidden text-sm text-slate-500 dark:text-slate-400 sm:block">
             自动合并同一节点与用户连续时间段的流量记录，展示开始与结束时间，支持按节点及用户筛选
           </p>
         </div>

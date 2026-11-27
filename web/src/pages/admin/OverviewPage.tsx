@@ -56,10 +56,10 @@ export function OverviewPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="admin-sticky-header flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold text-slate-900 dark:text-white">系统概览</h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400">
+          <p className="hidden text-sm text-slate-500 dark:text-slate-400 sm:block">
             实时查看集群节点、用户流量与告警通知运行状态
           </p>
         </div>

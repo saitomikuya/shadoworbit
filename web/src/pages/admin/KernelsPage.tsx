@@ -193,10 +193,10 @@ export function KernelsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="admin-sticky-header flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold text-slate-900 dark:text-white">内核版本管理</h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400">
+          <p className="hidden text-sm text-slate-500 dark:text-slate-400 sm:block">
             同步 GitHub 发布版本（sing-box / shadow-tls）、维护 snell-server 下载源并向节点批量推送升级
             {catalog?.synced_at ? ` · 上次同步：${formatDateTime(catalog.synced_at)}` : ''}
           </p>

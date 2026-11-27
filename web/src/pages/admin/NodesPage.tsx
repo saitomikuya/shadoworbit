@@ -456,23 +456,73 @@ export function NodesPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-bold text-slate-900 dark:text-white">节点管理</h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400">
-            管理 Snell + ShadowTLS v3、sing-box SS2022 EIH、DNS 解锁、流量上限及节点部署命令
-          </p>
+      <div className="admin-sticky-header space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="text-xl font-bold text-slate-900 dark:text-white">节点管理</h1>
+            <p className="hidden text-sm text-slate-500 dark:text-slate-400 sm:block">
+              管理 Snell + ShadowTLS v3、sing-box SS2022 EIH、DNS 解锁、流量上限及节点部署命令
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={() => void load()} className="btn-secondary" disabled={loading}>
+              <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+              刷新
+            </button>
+            <button type="button" onClick={openCreate} className="btn-primary">
+              <Plus className="h-4 w-4" />
+              添加节点
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <button type="button" onClick={() => void load()} className="btn-secondary" disabled={loading}>
-            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-            刷新
-          </button>
-          <button type="button" onClick={openCreate} className="btn-primary">
-            <Plus className="h-4 w-4" />
-            添加节点
-          </button>
-        </div>
+
+        {/* Region Tag Filter Bar */}
+        {nodes.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium text-slate-500 dark:text-slate-400">地区筛选：</span>
+            <button
+              type="button"
+              onClick={() => setRegionFilter('__ALL__')}
+              className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
+                regionFilter === '__ALL__'
+                  ? 'bg-indigo-600 text-white dark:bg-indigo-500'
+                  : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50 dark:bg-slate-900 dark:text-slate-300 dark:ring-slate-800'
+              }`}
+            >
+              全部地区 ({nodes.length})
+            </button>
+            {regionTags.map((tag) => {
+              const count = nodes.filter((n) => (n.region_tag || '').trim() === tag).length;
+              return (
+                <button
+                  key={tag}
+                  type="button"
+                  onClick={() => setRegionFilter(tag)}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
+                    regionFilter === tag
+                      ? 'bg-indigo-600 text-white dark:bg-indigo-500'
+                      : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50 dark:bg-slate-900 dark:text-slate-300 dark:ring-slate-800'
+                  }`}
+                >
+                  {tag} ({count})
+                </button>
+              );
+            })}
+            {hasUntagged && (
+              <button
+                type="button"
+                onClick={() => setRegionFilter('__UNTAGGED__')}
+                className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
+                  regionFilter === '__UNTAGGED__'
+                    ? 'bg-indigo-600 text-white dark:bg-indigo-500'
+                    : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50 dark:bg-slate-900 dark:text-slate-300 dark:ring-slate-800'
+                }`}
+              >
+                未分组 ({nodes.filter((n) => !(n.region_tag || '').trim()).length})
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Sync Prompt Banner when navigated from Overview */}
@@ -498,54 +548,6 @@ export function NodesPage() {
               忽略
             </button>
           </div>
-        </div>
-      )}
-
-      {/* Region Tag Filter Bar */}
-      {nodes.length > 0 && (
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs font-medium text-slate-500 dark:text-slate-400">地区筛选：</span>
-          <button
-            type="button"
-            onClick={() => setRegionFilter('__ALL__')}
-            className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
-              regionFilter === '__ALL__'
-                ? 'bg-indigo-600 text-white dark:bg-indigo-500'
-                : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50 dark:bg-slate-900 dark:text-slate-300 dark:ring-slate-800'
-            }`}
-          >
-            全部地区 ({nodes.length})
-          </button>
-          {regionTags.map((tag) => {
-            const count = nodes.filter((n) => (n.region_tag || '').trim() === tag).length;
-            return (
-              <button
-                key={tag}
-                type="button"
-                onClick={() => setRegionFilter(tag)}
-                className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
-                  regionFilter === tag
-                    ? 'bg-indigo-600 text-white dark:bg-indigo-500'
-                    : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50 dark:bg-slate-900 dark:text-slate-300 dark:ring-slate-800'
-                }`}
-              >
-                {tag} ({count})
-              </button>
-            );
-          })}
-          {hasUntagged && (
-            <button
-              type="button"
-              onClick={() => setRegionFilter('__UNTAGGED__')}
-              className={`rounded-lg px-3 py-1.5 text-xs font-medium ${
-                regionFilter === '__UNTAGGED__'
-                  ? 'bg-indigo-600 text-white dark:bg-indigo-500'
-                  : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50 dark:bg-slate-900 dark:text-slate-300 dark:ring-slate-800'
-              }`}
-            >
-              未分组 ({nodes.filter((n) => !(n.region_tag || '').trim()).length})
-            </button>
-          )}
         </div>
       )}
 

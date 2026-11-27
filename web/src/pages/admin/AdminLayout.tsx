@@ -155,7 +155,7 @@ export function AdminLayout() {
   );
 
   return (
-    <div className="flex min-h-screen overflow-x-hidden bg-slate-50 dark:bg-slate-950">
+    <div className="flex min-h-screen overflow-x-clip bg-slate-50 dark:bg-slate-950">
       {/* Desktop Sidebar (fixed so footer links stay anchored at bottom-left on long pages) */}
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-60 border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 lg:block">
         {navContent}

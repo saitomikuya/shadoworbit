@@ -103,23 +103,24 @@ export function SettingsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-bold text-slate-900 dark:text-white">系统设置</h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400">
-            统一管理面板基础信息、监控告警阈值、DNS 解锁规则组与告警推送通道
-          </p>
+      <div className="admin-sticky-header space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="text-xl font-bold text-slate-900 dark:text-white">系统设置</h1>
+            <p className="hidden text-sm text-slate-500 dark:text-slate-400 sm:block">
+              统一管理面板基础信息、监控告警阈值、DNS 解锁规则组与告警推送通道
+            </p>
+          </div>
+          {activeTab === 'general' && (
+            <button type="button" onClick={() => void load()} className="btn-secondary" disabled={loading}>
+              <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+              重新加载
+            </button>
+          )}
         </div>
-        {activeTab === 'general' && (
-          <button type="button" onClick={() => void load()} className="btn-secondary" disabled={loading}>
-            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-            重新加载
-          </button>
-        )}
-      </div>
 
-      {/* Integrated Settings Tabs */}
-      <div className="flex flex-wrap gap-2 border-b border-slate-200 pb-3 dark:border-slate-800">
+        {/* Integrated Settings Tabs */}
+        <div className="flex flex-wrap gap-2">
         <button
           type="button"
           onClick={() => switchTab('general')}
@@ -156,6 +157,7 @@ export function SettingsPage() {
           <Bell className="h-4 w-4" />
           告警通知
         </button>
+        </div>
       </div>
 
       {activeTab === 'dns-rules' ? (

@@ -368,10 +368,10 @@ export function UsersPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="admin-sticky-header flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold text-slate-900 dark:text-white">用户与订阅管理</h1>
-          <p className="text-sm text-slate-500 dark:text-slate-400">
+          <p className="hidden text-sm text-slate-500 dark:text-slate-400 sm:block">
             统一管理管理员专属 Snell 通道与 SS2022 用户的配额、节点授权及订阅配置
           </p>
         </div>
