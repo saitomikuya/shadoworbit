@@ -149,9 +149,9 @@ func (s *Scheduler) evaluateNodeLocked(ctx context.Context, node *store.Node) er
 					TargetType: webhook.TargetTypeNode,
 					TargetID:   node.ID,
 					TargetName: node.Name,
-					Title:      "Node Traffic Paused",
-					Message:    fmt.Sprintf("Node %s paused: counted traffic %d bytes reached threshold %d bytes", node.Name, counted, node.TrafficThresholdBytes),
-					Detail:     fmt.Sprintf("action=%s mode=%s", node.ThresholdAction, node.TrafficCountMode),
+					Title:      fmt.Sprintf("节点流量超限暂停：%s", node.Name),
+					Message:    fmt.Sprintf("节点 %s 本周期流量已达熔断阈值（%s / %s），已自动暂停服务", node.Name, webhook.FormatBytes(uint64(counted)), webhook.FormatBytes(uint64(node.TrafficThresholdBytes))),
+					Detail:     fmt.Sprintf("执行动作：%s；统计方式：%s", formatThresholdActionCN(node.ThresholdAction), formatTrafficModeCN(node.TrafficCountMode)),
 					Resolved:   false,
 					Timestamp:  nowUTC,
 				})
@@ -186,8 +186,8 @@ func (s *Scheduler) evaluateNodeLocked(ctx context.Context, node *store.Node) er
 			TargetType: webhook.TargetTypeNode,
 			TargetID:   node.ID,
 			TargetName: node.Name,
-			Title:      "Node Traffic Recovered",
-			Message:    fmt.Sprintf("Node %s traffic resumed: counted traffic %d bytes is below threshold %d bytes", node.Name, counted, node.TrafficThresholdBytes),
+			Title:      fmt.Sprintf("节点流量恢复：%s", node.Name),
+			Message:    fmt.Sprintf("节点 %s 本周期流量（%s）已低于熔断阈值（%s），代理服务已自动恢复", node.Name, webhook.FormatBytes(uint64(counted)), webhook.FormatBytes(uint64(node.TrafficThresholdBytes))),
 			Resolved:   true,
 			Timestamp:  nowUTC,
 		})
@@ -219,9 +219,9 @@ func (s *Scheduler) evaluateNodeLocked(ctx context.Context, node *store.Node) er
 				TargetType: webhook.TargetTypeNode,
 				TargetID:   node.ID,
 				TargetName: node.Name,
-				Title:      "Node Traffic Warning",
-				Message:    fmt.Sprintf("Node %s reached %d%% warning threshold (%d / %d bytes)", node.Name, warnPct, counted, node.TrafficThresholdBytes),
-				Detail:     fmt.Sprintf("mode=%s", node.TrafficCountMode),
+				Title:      fmt.Sprintf("节点流量预警：%s", node.Name),
+				Message:    fmt.Sprintf("节点 %s 本周期流量已达到 %d%% 预警阈值（%s / %s）", node.Name, warnPct, webhook.FormatBytes(uint64(counted)), webhook.FormatBytes(uint64(node.TrafficThresholdBytes))),
+				Detail:     fmt.Sprintf("统计方式：%s", formatTrafficModeCN(node.TrafficCountMode)),
 				Resolved:   false,
 				Timestamp:  nowUTC,
 			})
@@ -278,4 +278,26 @@ func (s *Scheduler) pruneNodeWarned(present map[int64]struct{}) {
 		}
 	}
 	s.mu.Unlock()
+}
+
+func formatThresholdActionCN(action string) string {
+	switch action {
+	case protocol.ThresholdActionStopSSOnly:
+		return "仅停止 SS2022（保留管理员 Snell）"
+	default:
+		return "停止全部代理（Snell + SS2022）"
+	}
+}
+
+func formatTrafficModeCN(mode string) string {
+	switch mode {
+	case protocol.TrafficCountTxOnly:
+		return "仅统计上传"
+	case protocol.TrafficCountRxOnly:
+		return "仅统计下载"
+	case protocol.TrafficCountMaxDir:
+		return "取单向最大值"
+	default:
+		return "双向合计（上传+下载）"
+	}
 }

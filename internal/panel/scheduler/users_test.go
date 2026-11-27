@@ -206,8 +206,8 @@ func TestEvaluateUsers_QuotaExhaustedLargeByteAlertNoOverflow(t *testing.T) {
 		t.Fatalf("expected 1 user_quota_exhausted alert, got %+v", evts)
 	}
 	msg := evts[0].Message
-	if !strings.Contains(msg, "(10000000000000000000 / 9223372036854775807 bytes)") || strings.Contains(msg, "(-") {
-		t.Fatalf("expected non-overflowed 10000000000000000000 in alert message, got %q", msg)
+	if !strings.Contains(msg, "8.67 EB / 8.00 EB") || strings.Contains(msg, "(-") {
+		t.Fatalf("expected non-overflowed 8.67 EB / 8.00 EB in alert message, got %q", msg)
 	}
 }
 

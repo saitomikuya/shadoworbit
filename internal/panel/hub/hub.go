@@ -25,13 +25,14 @@ type Hub struct {
 	store    *store.Store
 	notifier AlertNotifier
 
-	logger         *slog.Logger
-	now            func() time.Time
-	pingInterval   time.Duration
-	pingTimeout    time.Duration
-	writeTimeout   time.Duration
-	readLimit      int64
-	publicDebounce time.Duration
+	logger            *slog.Logger
+	now               func() time.Time
+	pingInterval      time.Duration
+	pingTimeout       time.Duration
+	writeTimeout      time.Duration
+	readLimit         int64
+	publicDebounce    time.Duration
+	offlineAlertDelay time.Duration
 
 	callbackMu       sync.RWMutex
 	onTrafficUpdated TrafficUpdatedFunc
@@ -75,8 +76,9 @@ func NewHub(st *store.Store, notifier AlertNotifier, opts ...Option) *Hub {
 		pingInterval:   defaultPingInterval,
 		pingTimeout:    defaultPingTimeout,
 		writeTimeout:   defaultWriteTimeout,
-		readLimit:      defaultReadLimit,
-		publicDebounce: defaultPublicDebounce,
+		readLimit:         defaultReadLimit,
+		publicDebounce:    defaultPublicDebounce,
+		offlineAlertDelay: defaultOfflineAlertDelay,
 		baseCtx:        baseCtx,
 		cancelBase:     cancelBase,
 		sessions:       make(map[int64]*agentSession),
@@ -274,7 +276,8 @@ func (h *Hub) notify(ctx context.Context, evt webhook.AlertEvent) {
 
 // CheckHeartbeats evicts stale live sessions whose LastSeenAt exceeded offlineTimeout,
 // marks stale nodes offline in the store (preserving traffic_paused), and fires
-// webhook.EventNodeOffline once per offline transition without re-alerting after restarts.
+// webhook.EventNodeOffline once a node has remained offline for offlineAlertDelay
+// (default 10 minutes) without re-alerting after restarts.
 func (h *Hub) CheckHeartbeats(ctx context.Context, offlineTimeout time.Duration) error {
 	if h.store == nil {
 		return errors.New("hub: nil store")
@@ -323,33 +326,51 @@ func (h *Hub) CheckHeartbeats(ctx context.Context, offlineTimeout time.Duration)
 			lastSeen = tel.LastSeenAt.UTC()
 		}
 
-		if now.Sub(lastSeen) < offlineTimeout {
-			h.mu.Unlock()
-			nodeStatusMu.Unlock()
-			continue
-		}
-
-		// Evict stale half-open live session if present.
+		pendingSince, isPending := h.offlinePending[n.ID]
 		var evicted *agentSession
 		if sess != nil {
+			if now.Sub(lastSeen) < offlineTimeout {
+				h.mu.Unlock()
+				nodeStatusMu.Unlock()
+				continue
+			}
+			// Evict stale half-open live session.
 			evicted = sess
 			evicted.superseded.Store(true)
 			delete(h.sessions, n.ID)
+			if hasTel {
+				tel.Online = false
+				h.telemetry[n.ID] = tel
+			}
+			if !isPending {
+				pendingSince = lastSeen
+				h.offlinePending[n.ID] = pendingSince
+				isPending = true
+			}
+		} else if !isPending {
+			if n.Status != protocol.NodeStatusOnline || now.Sub(lastSeen) < offlineTimeout {
+				h.mu.Unlock()
+				nodeStatusMu.Unlock()
+				continue
+			}
+			pendingSince = lastSeen
+			h.offlinePending[n.ID] = pendingSince
+			isPending = true
 		}
 
-		if hasTel {
-			tel.Online = false
-			h.telemetry[n.ID] = tel
+		offlineElapsed := now.Sub(pendingSince)
+		if offlineElapsed < 0 {
+			offlineElapsed = 0
 		}
-
-		_, isPending := h.offlinePending[n.ID]
 		wasOfflineAlerted := h.offlineAlerted[n.ID]
-		shouldAlert := (n.Status == protocol.NodeStatusOnline || isPending || evicted != nil) && !wasOfflineAlerted
-		needsDBOffline := shouldAlert || n.Status == protocol.NodeStatusOnline || evicted != nil
+		shouldAlert := isPending && !wasOfflineAlerted && (h.offlineAlertDelay <= 0 || offlineElapsed >= h.offlineAlertDelay)
+		needsDBOffline := evicted != nil || n.Status == protocol.NodeStatusOnline
 		if shouldAlert {
 			h.offlineAlerted[n.ID] = true
+			delete(h.offlinePending, n.ID)
+		} else if wasOfflineAlerted {
+			delete(h.offlinePending, n.ID)
 		}
-		delete(h.offlinePending, n.ID)
 		h.mu.Unlock()
 
 		if evicted != nil {
@@ -388,8 +409,9 @@ func (h *Hub) CheckHeartbeats(ctx context.Context, offlineTimeout time.Duration)
 				TargetType: webhook.TargetTypeNode,
 				TargetID:   n.ID,
 				TargetName: n.Name,
-				Title:      "Node Offline",
-				Message:    fmt.Sprintf("Node %s heartbeat timed out (last seen %s)", n.Name, lastSeen.Format(time.RFC3339)),
+				Title:      fmt.Sprintf("节点离线：%s", n.Name),
+				Message:    fmt.Sprintf("节点 %s 已持续离线 %s，请检查节点网络或 node-agent 运行状态", n.Name, webhook.FormatDuration(offlineElapsed)),
+				Detail:     fmt.Sprintf("最后在线时间：%s", webhook.FormatLocalTime(lastSeen)),
 				Resolved:   false,
 				Timestamp:  now,
 			})

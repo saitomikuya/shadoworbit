@@ -149,8 +149,8 @@ func (s *Scheduler) runNodeBillingResets(
 				TargetType: webhook.TargetTypeNode,
 				TargetID:   node.ID,
 				TargetName: node.Name,
-				Title:      "Node Monthly Billing Reset",
-				Message:    fmt.Sprintf("Node %s monthly cycle traffic reset (%s) and service resumed", node.Name, currentMonth),
+				Title:      fmt.Sprintf("节点月度重置恢复：%s", node.Name),
+				Message:    fmt.Sprintf("节点 %s 已完成 %s 月度流量清零，代理服务已自动恢复", node.Name, currentMonth),
 				Resolved:   true,
 				Timestamp:  nowUTC,
 			})

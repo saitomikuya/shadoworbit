@@ -255,9 +255,9 @@ func (e *Engine) SendTest(ctx context.Context, ch store.WebhookChannel) error {
 		TargetType: TargetTypeSystem,
 		TargetID:   ch.ID,
 		TargetName: ch.Name,
-		Title:      "ShadowOrbit Webhook Test",
-		Message:    fmt.Sprintf("Test notification for channel %q (%s).", ch.Name, ch.Provider),
-		Detail:     "If you see this message, webhook delivery and signing are configured correctly.",
+		Title:      "ShadowOrbit 告警通道测试",
+		Message:    fmt.Sprintf("告警通道「%s」（%s）连通性测试成功。", ch.Name, formatProviderLabel(ch.Provider)),
+		Detail:     "收到此消息表示 Webhook 推送地址与签名配置正常。",
 		Timestamp:  e.now().UTC(),
 	}, e.now)
 

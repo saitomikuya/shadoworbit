@@ -861,26 +861,18 @@ func TestHub_CheckHeartbeatsAndRealWebhookIntegration(t *testing.T) {
 	default:
 	}
 
-	// Advance past 30s (offline_timeout_seconds from system_settings).
+	// Advance past 30s (offline_timeout_seconds from system_settings), still < 10m offline alert delay.
 	clk.Advance(25 * time.Second)
 	if err := h.CheckHeartbeats(ctx, 0); err != nil {
 		t.Fatal(err)
 	}
 	eng.Wait()
 
-	// Both nodeOnline (evicted stale session) and nodePaused (disconnected pending) should fire node_offline.
-	var got []string
-	for i := 0; i < 2; i++ {
-		select {
-		case p := <-receivedPayloads:
-			got = append(got, p)
-		case <-time.After(3 * time.Second):
-			t.Fatalf("timed out waiting for node_offline webhook #%d", i+1)
-		}
-	}
-	joined := strings.Join(got, "\n")
-	if !strings.Contains(joined, "hb-online") || !strings.Contains(joined, "hb-paused") {
-		t.Fatalf("expected alerts for both nodes, got: %s", joined)
+	// Offline state & eviction must happen immediately, while node_offline webhook must NOT fire before 10 minutes.
+	select {
+	case p := <-receivedPayloads:
+		t.Fatalf("unexpected node_offline alert before 10 minutes offline: %s", p)
+	default:
 	}
 
 	if h.IsOnline(nodeOnline.ID) {
@@ -896,6 +888,30 @@ func TestHub_CheckHeartbeatsAndRealWebhookIntegration(t *testing.T) {
 	dbPaused, err := st.GetNodeByID(ctx, nodePaused.ID)
 	if err != nil || dbPaused.Status != protocol.NodeStatusTrafficPaused {
 		t.Fatalf("expected nodePaused status=traffic_paused preserved, got %q err=%v", dbPaused.Status, err)
+	}
+
+	// Advance past 10 minutes offline -> both nodeOnline and nodePaused now fire node_offline.
+	clk.Advance(10 * time.Minute)
+	if err := h.CheckHeartbeats(ctx, 0); err != nil {
+		t.Fatal(err)
+	}
+	eng.Wait()
+
+	var got []string
+	for i := 0; i < 2; i++ {
+		select {
+		case p := <-receivedPayloads:
+			got = append(got, p)
+		case <-time.After(3 * time.Second):
+			t.Fatalf("timed out waiting for node_offline webhook #%d", i+1)
+		}
+	}
+	joined := strings.Join(got, "\n")
+	if !strings.Contains(joined, "hb-online") || !strings.Contains(joined, "hb-paused") {
+		t.Fatalf("expected alerts for both nodes, got: %s", joined)
+	}
+	if !strings.Contains(joined, "节点离线") || !strings.Contains(joined, "已持续离线") {
+		t.Fatalf("expected Chinese offline alert content, got: %s", joined)
 	}
 
 	// Subsequent CheckHeartbeats must NOT duplicate node_offline alerts.
@@ -946,6 +962,85 @@ func TestHub_CheckHeartbeatsAndRealWebhookIntegration(t *testing.T) {
 		t.Fatalf("timed out waiting for resolved node_online webhook")
 	}
 	eng.Wait()
+}
+
+func TestCheckHeartbeats_ReconnectWithin10MinutesSuppressesAlerts(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+
+	receivedPayloads := make(chan string, 16)
+	hookSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		b, _ := json.Marshal(body)
+		receivedPayloads <- string(b)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer hookSrv.Close()
+
+	if err := st.CreateWebhookChannel(ctx, &store.WebhookChannel{
+		Name:             "node-events",
+		Provider:         protocol.WebhookProviderCustom,
+		URL:              hookSrv.URL,
+		SubscribedEvents: []string{webhook.EventNodeOffline, webhook.EventNodeOnline},
+		Enabled:          true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	clk := newFakeClock(time.Date(2026, 11, 27, 10, 0, 0, 0, time.UTC))
+	eng := webhook.NewEngine(st, hookSrv.Client(), webhook.WithNow(clk.Now))
+	defer eng.Close()
+
+	h := hub.NewHub(st, eng, hub.WithNow(clk.Now), hub.WithPublicDebounce(10*time.Millisecond))
+	t.Cleanup(func() { _ = h.Close() })
+	srv := newTestServer(t, h)
+
+	if err := st.SetSetting(ctx, "offline_timeout_seconds", "30"); err != nil {
+		t.Fatal(err)
+	}
+
+	node, tok := createTestNode(t, st, "flapping-node", true)
+	c1, _, err := dialAgentWS(ctx, srv.URL, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = readEnvelope(t, c1, 3*time.Second)
+	if err := sendAgentEnvelope(ctx, c1, protocol.MsgTypeAgentHello, "h1", protocol.AgentHello{OS: "linux", Arch: "amd64"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = c1.Close(websocket.StatusNormalClosure, "reboot")
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && h.IsOnline(node.ID) {
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Advance 5 minutes (< 10m) and run CheckHeartbeats -> zero alerts.
+	clk.Advance(5 * time.Minute)
+	if err := h.CheckHeartbeats(ctx, 0); err != nil {
+		t.Fatal(err)
+	}
+	eng.Wait()
+
+	// Reconnect before 10 minutes -> zero node_offline AND zero node_online recovery alerts.
+	c2, _, err := dialAgentWS(ctx, srv.URL, tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c2.CloseNow()
+	_ = readEnvelope(t, c2, 3*time.Second)
+	if err := sendAgentEnvelope(ctx, c2, protocol.MsgTypeAgentHello, "h2", protocol.AgentHello{OS: "linux", Arch: "amd64"}); err != nil {
+		t.Fatal(err)
+	}
+	eng.Wait()
+
+	select {
+	case p := <-receivedPayloads:
+		t.Fatalf("expected zero offline/online alerts when reconnecting within 10m, got: %s", p)
+	default:
+	}
 }
 
 func TestAgentWS_DisconnectReconnectSQLiteContentionRace(t *testing.T) {

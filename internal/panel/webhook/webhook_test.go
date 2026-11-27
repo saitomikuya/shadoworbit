@@ -1132,7 +1132,7 @@ func TestServerChanDeliveryAndValidation(t *testing.T) {
 		t.Fatalf("unexpected optional options in serverchan payload: %+v", payload)
 	}
 	desp, _ := payload["desp"].(string)
-	if !strings.Contains(desp, "Node stopped responding") || !strings.Contains(desp, "SG-01") {
+	if !strings.Contains(desp, "Node stopped responding") || !strings.Contains(desp, "SG-01") || !strings.Contains(desp, "告警状态") || !strings.Contains(desp, "事件类型") || !strings.Contains(desp, "影响对象") || !strings.Contains(desp, "触发时间") {
 		t.Fatalf("unexpected serverchan desp: %q", desp)
 	}
 
@@ -1156,5 +1156,26 @@ func TestServerChanDeliveryAndValidation(t *testing.T) {
 		Secret:   `{invalid-json`,
 	}); !errors.Is(err, ErrInvalidSecretConfig) {
 		t.Fatalf("expected ErrInvalidSecretConfig on malformed JSON secret, got %v", err)
+	}
+}
+
+func TestChineseFormattingHelpers(t *testing.T) {
+	if got := FormatBytes(0); got != "0 B" {
+		t.Fatalf("FormatBytes(0) = %q", got)
+	}
+	if got := FormatBytes(50 * 1024 * 1024 * 1024); got != "50.0 GB" {
+		t.Fatalf("FormatBytes(50GiB) = %q", got)
+	}
+	if got := FormatDuration(10*time.Minute + 5*time.Second); got != "10 分钟" {
+		t.Fatalf("FormatDuration(10m5s) = %q", got)
+	}
+	if got := FormatDuration(2*time.Hour + 15*time.Minute); got != "2 小时 15 分钟" {
+		t.Fatalf("FormatDuration(2h15m) = %q", got)
+	}
+	if got := formatAlertHeaderTitle(AlertEvent{Type: EventNodeOffline, Severity: SeverityCritical, Title: "节点离线：HK-01"}); got != "【严重】节点离线：HK-01" {
+		t.Fatalf("formatAlertHeaderTitle firing = %q", got)
+	}
+	if got := formatAlertHeaderTitle(AlertEvent{Type: EventNodeOnline, Severity: SeverityInfo, Resolved: true, Title: "节点恢复上线：HK-01"}); got != "【已恢复】节点恢复上线：HK-01" {
+		t.Fatalf("formatAlertHeaderTitle resolved = %q", got)
 	}
 }

@@ -275,6 +275,9 @@ export function SettingsPage() {
                   onChange={(v) => setForm({ ...form, offline_timeout_seconds: v })}
                   required
                 />
+                <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                  心跳超时后标记离线；持续离线超过 10 分钟后推送告警
+                </p>
               </div>
             </div>
 

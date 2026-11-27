@@ -57,7 +57,7 @@ const PROVIDER_LABELS: Record<WebhookProvider, string> = {
 };
 
 const EVENT_LABELS: Record<string, string> = {
-  node_offline: '节点离线',
+  node_offline: '节点离线（超过 10 分钟）',
   node_online: '节点上线恢复',
   process_crashed: '内核进程异常退出',
   kernel_update: '内核更新结果',

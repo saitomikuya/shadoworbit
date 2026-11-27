@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -91,41 +92,187 @@ func truncateSnippet(body []byte) string {
 	return s
 }
 
-func formatAlertHeaderTitle(evt AlertEvent) string {
-	tag := strings.ToUpper(evt.Severity)
+// FormatBytes formats a byte count into a human-readable string using base-1024 units.
+func FormatBytes(b uint64) string {
+	if b < 1024 {
+		return fmt.Sprintf("%d B", b)
+	}
+	units := []string{"B", "KB", "MB", "GB", "TB", "PB", "EB"}
+	val := float64(b)
+	idx := 0
+	for val >= 1024 && idx < len(units)-1 {
+		val /= 1024
+		idx++
+	}
+	switch {
+	case val >= 100:
+		return fmt.Sprintf("%.0f %s", val, units[idx])
+	case val >= 10:
+		return fmt.Sprintf("%.1f %s", val, units[idx])
+	default:
+		return fmt.Sprintf("%.2f %s", val, units[idx])
+	}
+}
+
+// FormatDuration formats a duration into concise Chinese units.
+func FormatDuration(d time.Duration) string {
+	if d <= 0 {
+		return "0 秒"
+	}
+	totalSecs := int64(math.Round(d.Seconds()))
+	if totalSecs <= 0 {
+		return "0 秒"
+	}
+	days := totalSecs / 86400
+	hours := (totalSecs % 86400) / 3600
+	mins := (totalSecs % 3600) / 60
+	secs := totalSecs % 60
+	switch {
+	case days > 0:
+		return fmt.Sprintf("%d 天 %d 小时", days, hours)
+	case hours > 0:
+		return fmt.Sprintf("%d 小时 %d 分钟", hours, mins)
+	case mins > 0:
+		return fmt.Sprintf("%d 分钟", mins)
+	default:
+		return fmt.Sprintf("%d 秒", secs)
+	}
+}
+
+// FormatLocalTime formats ts in local timezone with timezone abbreviation.
+func FormatLocalTime(ts time.Time) string {
+	if ts.IsZero() {
+		return "-"
+	}
+	return ts.In(time.Local).Format("2006-01-02 15:04:05 MST")
+}
+
+func formatSeverityTag(evt AlertEvent) string {
 	if evt.Resolved {
-		tag = "RESOLVED"
-	} else if tag == "" {
-		tag = "WARNING"
+		return "已恢复"
 	}
-	if evt.Title != "" {
-		return fmt.Sprintf("[%s] %s", tag, evt.Title)
+	switch evt.Severity {
+	case SeverityCritical:
+		return "严重"
+	case SeverityWarning:
+		return "警告"
+	case SeverityInfo:
+		return "通知"
+	default:
+		return "警告"
 	}
-	return fmt.Sprintf("[%s] %s", tag, evt.Type)
+}
+
+func formatEventTypeLabel(eventType string) string {
+	switch eventType {
+	case EventNodeOffline:
+		return "节点离线"
+	case EventNodeOnline:
+		return "节点上线恢复"
+	case EventProcessCrashed:
+		return "内核进程异常退出"
+	case EventKernelUpdate:
+		return "内核版本更新"
+	case EventConfigError:
+		return "节点配置异常"
+	case EventTrafficWarning:
+		return "节点流量预警"
+	case EventTrafficPaused:
+		return "节点流量超限暂停"
+	case EventTrafficRecovered:
+		return "节点流量恢复正常"
+	case EventUserQuotaExhausted:
+		return "用户流量配额耗尽"
+	case EventUserExpired:
+		return "用户账号已到期"
+	case EventHighResourceUsage:
+		return "节点资源占用过高"
+	case EventTest:
+		return "告警通道测试"
+	default:
+		if eventType == "" {
+			return "未知事件"
+		}
+		return eventType
+	}
+}
+
+func formatProviderLabel(provider string) string {
+	switch provider {
+	case protocol.WebhookProviderFeishu:
+		return "飞书"
+	case protocol.WebhookProviderDingTalk:
+		return "钉钉"
+	case protocol.WebhookProviderWeCom:
+		return "企业微信"
+	case protocol.WebhookProviderServerChan:
+		return "Server酱"
+	case protocol.WebhookProviderCustom:
+		return "自定义 Webhook"
+	default:
+		return provider
+	}
+}
+
+func formatAlertHeaderTitle(evt AlertEvent) string {
+	tag := formatSeverityTag(evt)
+	title := strings.TrimSpace(evt.Title)
+	if title == "" {
+		title = formatEventTypeLabel(evt.Type)
+	}
+	return fmt.Sprintf("【%s】%s", tag, title)
 }
 
 func formatTargetLine(evt AlertEvent) string {
+	targetTypeLabel := evt.TargetType
+	switch evt.TargetType {
+	case TargetTypeNode:
+		targetTypeLabel = "节点"
+	case TargetTypeUser:
+		targetTypeLabel = "用户"
+	case TargetTypeSystem:
+		targetTypeLabel = "系统通道"
+	}
+
 	switch {
-	case evt.TargetType != "" && evt.TargetName != "" && evt.TargetID > 0:
-		return fmt.Sprintf("%s / %s (#%d)", evt.TargetType, evt.TargetName, evt.TargetID)
-	case evt.TargetType != "" && evt.TargetName != "":
-		return fmt.Sprintf("%s / %s", evt.TargetType, evt.TargetName)
+	case targetTypeLabel != "" && evt.TargetName != "" && evt.TargetID > 0:
+		return fmt.Sprintf("%s %s (#%d)", targetTypeLabel, evt.TargetName, evt.TargetID)
+	case targetTypeLabel != "" && evt.TargetName != "":
+		return fmt.Sprintf("%s %s", targetTypeLabel, evt.TargetName)
 	case evt.TargetName != "":
 		return evt.TargetName
-	case evt.TargetType != "" && evt.TargetID > 0:
-		return fmt.Sprintf("%s (#%d)", evt.TargetType, evt.TargetID)
-	case evt.TargetType != "":
-		return evt.TargetType
+	case targetTypeLabel != "" && evt.TargetID > 0:
+		return fmt.Sprintf("%s (#%d)", targetTypeLabel, evt.TargetID)
+	case targetTypeLabel != "":
+		return targetTypeLabel
 	default:
 		return "-"
 	}
 }
 
-func formatStatusLabel(resolved bool) string {
-	if resolved {
+func formatStatusLabel(evt AlertEvent) string {
+	if evt.Type == EventTest {
+		return "测试推送"
+	}
+	if evt.Resolved {
 		return "已恢复"
 	}
-	return "告警触发"
+	switch evt.Severity {
+	case SeverityCritical:
+		return "严重告警"
+	case SeverityWarning:
+		return "预警通知"
+	default:
+		return "系统通知"
+	}
+}
+
+func formatEventDisplay(evt AlertEvent) string {
+	label := formatEventTypeLabel(evt.Type)
+	if evt.Type == "" {
+		return label
+	}
+	return fmt.Sprintf("%s (`%s`)", label, evt.Type)
 }
 
 // --- Feishu ---
@@ -178,16 +325,16 @@ func feishuHeaderTemplate(evt AlertEvent) string {
 
 func (e *Engine) buildFeishuRequest(ctx context.Context, ch store.WebhookChannel, evt AlertEvent) (*http.Request, error) {
 	var lines []string
-	lines = append(lines, fmt.Sprintf("**状态**: %s", formatStatusLabel(evt.Resolved)))
-	lines = append(lines, fmt.Sprintf("**事件**: `%s`", evt.Type))
-	lines = append(lines, fmt.Sprintf("**目标**: %s", formatTargetLine(evt)))
+	lines = append(lines, fmt.Sprintf("**告警状态**：%s", formatStatusLabel(evt)))
+	lines = append(lines, fmt.Sprintf("**事件类型**：%s", formatEventDisplay(evt)))
+	lines = append(lines, fmt.Sprintf("**影响对象**：%s", formatTargetLine(evt)))
 	if evt.Message != "" {
-		lines = append(lines, fmt.Sprintf("**说明**: %s", evt.Message))
+		lines = append(lines, fmt.Sprintf("**告警内容**：%s", evt.Message))
 	}
 	if evt.Detail != "" {
-		lines = append(lines, fmt.Sprintf("**详情**: %s", evt.Detail))
+		lines = append(lines, fmt.Sprintf("**详细信息**：%s", evt.Detail))
 	}
-	lines = append(lines, fmt.Sprintf("**时间**: %s", evt.Timestamp.UTC().Format(time.RFC3339)))
+	lines = append(lines, fmt.Sprintf("**触发时间**：%s", FormatLocalTime(evt.Timestamp)))
 
 	payload := feishuCardPayload{
 		MsgType: "interactive",
@@ -286,16 +433,17 @@ func (e *Engine) buildDingTalkRequest(ctx context.Context, ch store.WebhookChann
 	headerTitle := formatAlertHeaderTitle(evt)
 	var lines []string
 	lines = append(lines, "### "+headerTitle)
-	lines = append(lines, fmt.Sprintf("- **状态**: %s", formatStatusLabel(evt.Resolved)))
-	lines = append(lines, fmt.Sprintf("- **事件**: `%s`", evt.Type))
-	lines = append(lines, fmt.Sprintf("- **目标**: %s", formatTargetLine(evt)))
+	lines = append(lines, "")
+	lines = append(lines, fmt.Sprintf("- **告警状态**：%s", formatStatusLabel(evt)))
+	lines = append(lines, fmt.Sprintf("- **事件类型**：%s", formatEventDisplay(evt)))
+	lines = append(lines, fmt.Sprintf("- **影响对象**：%s", formatTargetLine(evt)))
 	if evt.Message != "" {
-		lines = append(lines, fmt.Sprintf("- **说明**: %s", evt.Message))
+		lines = append(lines, fmt.Sprintf("- **告警内容**：%s", evt.Message))
 	}
 	if evt.Detail != "" {
-		lines = append(lines, fmt.Sprintf("- **详情**: %s", evt.Detail))
+		lines = append(lines, fmt.Sprintf("- **详细信息**：%s", evt.Detail))
 	}
-	lines = append(lines, fmt.Sprintf("- **时间**: %s", evt.Timestamp.UTC().Format(time.RFC3339)))
+	lines = append(lines, fmt.Sprintf("- **触发时间**：%s", FormatLocalTime(evt.Timestamp)))
 
 	payload := dingTalkPayload{
 		MsgType: "markdown",
@@ -335,16 +483,16 @@ func (e *Engine) buildWeComRequest(ctx context.Context, ch store.WebhookChannel,
 	}
 	var lines []string
 	lines = append(lines, "### "+formatAlertHeaderTitle(evt))
-	lines = append(lines, fmt.Sprintf(`> **状态**: <font color="%s">%s</font>`, statusColor, formatStatusLabel(evt.Resolved)))
-	lines = append(lines, fmt.Sprintf("> **事件**: `%s`", evt.Type))
-	lines = append(lines, fmt.Sprintf("> **目标**: %s", formatTargetLine(evt)))
+	lines = append(lines, fmt.Sprintf(`> **告警状态**：<font color="%s">%s</font>`, statusColor, formatStatusLabel(evt)))
+	lines = append(lines, fmt.Sprintf("> **事件类型**：%s", formatEventDisplay(evt)))
+	lines = append(lines, fmt.Sprintf("> **影响对象**：%s", formatTargetLine(evt)))
 	if evt.Message != "" {
-		lines = append(lines, fmt.Sprintf("> **说明**: %s", evt.Message))
+		lines = append(lines, fmt.Sprintf("> **告警内容**：%s", evt.Message))
 	}
 	if evt.Detail != "" {
-		lines = append(lines, fmt.Sprintf("> **详情**: %s", evt.Detail))
+		lines = append(lines, fmt.Sprintf("> **详细信息**：%s", evt.Detail))
 	}
-	lines = append(lines, fmt.Sprintf("> **时间**: %s", evt.Timestamp.UTC().Format(time.RFC3339)))
+	lines = append(lines, fmt.Sprintf("> **触发时间**：%s", FormatLocalTime(evt.Timestamp)))
 
 	content := truncateUTF8(strings.Join(lines, "\n"), wecomMaxMarkdownBytes)
 	payload := wecomPayload{
@@ -400,16 +548,16 @@ func truncateRunes(s string, maxRunes int) string {
 func (e *Engine) buildServerChanRequest(ctx context.Context, ch store.WebhookChannel, evt AlertEvent) (*http.Request, error) {
 	title := truncateRunes(formatAlertHeaderTitle(evt), 32)
 	var lines []string
-	lines = append(lines, fmt.Sprintf("- **状态**: %s", formatStatusLabel(evt.Resolved)))
-	lines = append(lines, fmt.Sprintf("- **事件**: `%s`", evt.Type))
-	lines = append(lines, fmt.Sprintf("- **目标**: %s", formatTargetLine(evt)))
+	lines = append(lines, fmt.Sprintf("- **告警状态**：%s", formatStatusLabel(evt)))
+	lines = append(lines, fmt.Sprintf("- **事件类型**：%s", formatEventDisplay(evt)))
+	lines = append(lines, fmt.Sprintf("- **影响对象**：%s", formatTargetLine(evt)))
 	if evt.Message != "" {
-		lines = append(lines, fmt.Sprintf("- **说明**: %s", evt.Message))
+		lines = append(lines, fmt.Sprintf("- **告警内容**：%s", evt.Message))
 	}
 	if evt.Detail != "" {
-		lines = append(lines, fmt.Sprintf("- **详情**: %s", evt.Detail))
+		lines = append(lines, fmt.Sprintf("- **详细信息**：%s", evt.Detail))
 	}
-	lines = append(lines, fmt.Sprintf("- **时间**: %s", evt.Timestamp.UTC().Format(time.RFC3339)))
+	lines = append(lines, fmt.Sprintf("- **触发时间**：%s", FormatLocalTime(evt.Timestamp)))
 
 	payload := map[string]any{
 		"title": title,

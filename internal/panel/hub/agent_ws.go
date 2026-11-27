@@ -493,8 +493,8 @@ func (h *Hub) handleAgentHello(s *agentSession, env protocol.Envelope) {
 			TargetType: webhook.TargetTypeNode,
 			TargetID:   s.nodeID,
 			TargetName: prevNode.Name,
-			Title:      "Node Online",
-			Message:    fmt.Sprintf("Node %s reconnected", prevNode.Name),
+			Title:      fmt.Sprintf("节点恢复上线：%s", prevNode.Name),
+			Message:    fmt.Sprintf("节点 %s 已重新连接并恢复在线", prevNode.Name),
 			Resolved:   true,
 			Timestamp:  now,
 		})
@@ -651,23 +651,31 @@ func (h *Hub) handleAgentEvent(s *agentSession, env protocol.Envelope) {
 		}
 
 	case protocol.EventConfigError:
+		msg := fmt.Sprintf("节点 %s 应用配置失败", nodeName)
+		if strings.TrimSpace(ev.Message) != "" {
+			msg = fmt.Sprintf("节点 %s 应用配置失败：%s", nodeName, ev.Message)
+		}
 		h.notify(s.ctx, webhook.AlertEvent{
 			Type:       webhook.EventConfigError,
 			Severity:   webhook.SeverityCritical,
 			TargetType: webhook.TargetTypeNode,
 			TargetID:   s.nodeID,
 			TargetName: nodeName,
-			Title:      "Agent Config Error",
-			Message:    ev.Message,
+			Title:      fmt.Sprintf("节点配置异常：%s", nodeName),
+			Message:    msg,
 			Detail:     ev.Detail,
 			Resolved:   false,
 			Timestamp:  now,
 		})
 
 	case protocol.EventProcessCrashed:
-		title := "Agent Process Crashed"
+		title := fmt.Sprintf("节点进程异常退出：%s", nodeName)
 		if strings.TrimSpace(ev.Kernel) != "" {
-			title = fmt.Sprintf("Kernel %s Crashed", ev.Kernel)
+			title = fmt.Sprintf("内核进程异常退出（%s）：%s", ev.Kernel, nodeName)
+		}
+		msg := fmt.Sprintf("节点 %s 代理进程异常退出", nodeName)
+		if strings.TrimSpace(ev.Message) != "" {
+			msg = fmt.Sprintf("节点 %s 进程异常退出：%s", nodeName, ev.Message)
 		}
 		h.notify(s.ctx, webhook.AlertEvent{
 			Type:       webhook.EventProcessCrashed,
@@ -676,7 +684,7 @@ func (h *Hub) handleAgentEvent(s *agentSession, env protocol.Envelope) {
 			TargetID:   s.nodeID,
 			TargetName: nodeName,
 			Title:      title,
-			Message:    ev.Message,
+			Message:    msg,
 			Detail:     ev.Detail,
 			Resolved:   false,
 			Timestamp:  now,
@@ -732,28 +740,44 @@ func (h *Hub) handleAgentEvent(s *agentSession, env protocol.Envelope) {
 				h.telemetry[s.nodeID] = tel
 				h.mu.Unlock()
 			}
+			title := fmt.Sprintf("内核更新成功：%s", nodeName)
+			if strings.TrimSpace(ev.Kernel) != "" {
+				title = fmt.Sprintf("内核更新成功（%s）：%s", ev.Kernel, nodeName)
+			}
+			msg := fmt.Sprintf("节点 %s 已成功更新 %s 至 %s", nodeName, ev.Kernel, ev.Version)
+			if strings.TrimSpace(ev.Message) != "" {
+				msg = fmt.Sprintf("节点 %s 内核更新完成：%s", nodeName, ev.Message)
+			}
 			h.notify(s.ctx, webhook.AlertEvent{
 				Type:       webhook.EventKernelUpdate,
 				Severity:   webhook.SeverityInfo,
 				TargetType: webhook.TargetTypeNode,
 				TargetID:   s.nodeID,
 				TargetName: nodeName,
-				Title:      "Kernel Update Succeeded",
-				Message:    ev.Message,
+				Title:      title,
+				Message:    msg,
 				Detail:     ev.Detail,
 				Resolved:   true,
 				Timestamp:  now,
 			})
 
 		case protocol.EventStatusFailed, "update_failed":
+			title := fmt.Sprintf("内核更新失败：%s", nodeName)
+			if strings.TrimSpace(ev.Kernel) != "" {
+				title = fmt.Sprintf("内核更新失败（%s）：%s", ev.Kernel, nodeName)
+			}
+			msg := fmt.Sprintf("节点 %s 更新 %s 失败", nodeName, ev.Kernel)
+			if strings.TrimSpace(ev.Message) != "" {
+				msg = fmt.Sprintf("节点 %s 内核更新失败：%s", nodeName, ev.Message)
+			}
 			h.notify(s.ctx, webhook.AlertEvent{
 				Type:       webhook.EventKernelUpdate,
 				Severity:   webhook.SeverityCritical,
 				TargetType: webhook.TargetTypeNode,
 				TargetID:   s.nodeID,
 				TargetName: nodeName,
-				Title:      "Kernel Update Failed",
-				Message:    ev.Message,
+				Title:      title,
+				Message:    msg,
 				Detail:     ev.Detail,
 				Resolved:   false,
 				Timestamp:  now,

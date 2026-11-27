@@ -141,8 +141,8 @@ func (s *Scheduler) evaluateUserIDs(ctx context.Context, userIDs []int64, nowUTC
 					TargetType: webhook.TargetTypeUser,
 					TargetID:   user.ID,
 					TargetName: user.Username,
-					Title:      "User Expired",
-					Message:    fmt.Sprintf("User %s subscription expired at %s", user.Username, user.ExpireAt.UTC().Format(time.RFC3339)),
+					Title:      fmt.Sprintf("用户账号已到期：%s", user.Username),
+					Message:    fmt.Sprintf("用户 %s 的订阅已于 %s 到期，已自动撤销节点访问权限", user.Username, webhook.FormatLocalTime(user.ExpireAt.UTC())),
 					Resolved:   false,
 					Timestamp:  nowUTC,
 				})
@@ -155,8 +155,8 @@ func (s *Scheduler) evaluateUserIDs(ctx context.Context, userIDs []int64, nowUTC
 					TargetType: webhook.TargetTypeUser,
 					TargetID:   user.ID,
 					TargetName: user.Username,
-					Title:      "User Quota Exhausted",
-					Message:    fmt.Sprintf("User %s exhausted traffic quota (%d / %d bytes)", user.Username, used, user.TrafficQuotaBytes),
+					Title:      fmt.Sprintf("用户流量配额耗尽：%s", user.Username),
+					Message:    fmt.Sprintf("用户 %s 流量配额已用尽（%s / %s），已自动暂停访问权限", user.Username, webhook.FormatBytes(used), webhook.FormatBytes(uint64(user.TrafficQuotaBytes))),
 					Resolved:   false,
 					Timestamp:  nowUTC,
 				})

@@ -12,11 +12,12 @@ import (
 )
 
 const (
-	defaultPingInterval   = 25 * time.Second
-	defaultPingTimeout    = 10 * time.Second
-	defaultWriteTimeout   = 10 * time.Second
-	defaultReadLimit      = int64(1 << 20) // 1 MiB
-	defaultPublicDebounce = 200 * time.Millisecond
+	defaultPingInterval      = 25 * time.Second
+	defaultPingTimeout       = 10 * time.Second
+	defaultWriteTimeout      = 10 * time.Second
+	defaultReadLimit         = int64(1 << 20) // 1 MiB
+	defaultPublicDebounce    = 200 * time.Millisecond
+	defaultOfflineAlertDelay = 10 * time.Minute
 
 	agentSendQueueCap  = 64
 	publicSendQueueCap = 4
@@ -134,6 +135,15 @@ func WithPublicDebounce(d time.Duration) Option {
 	return func(h *Hub) {
 		if d >= 0 {
 			h.publicDebounce = d
+		}
+	}
+}
+
+// WithOfflineAlertDelay sets how long a node must remain offline before firing node_offline alerts.
+func WithOfflineAlertDelay(d time.Duration) Option {
+	return func(h *Hub) {
+		if d >= 0 {
+			h.offlineAlertDelay = d
 		}
 	}
 }
