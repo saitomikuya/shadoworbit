@@ -119,6 +119,7 @@ func TestMigrateIdempotent(t *testing.T) {
 		"schema_migrations", "dns_rule_groups", "nodes", "users",
 		"user_node_access", "user_node_traffic", "traffic_logs_daily",
 		"sub_templates", "webhook_channels", "system_settings",
+		"lb_groups", "lb_group_members", "lb_switch_logs",
 	}
 	for _, tbl := range expectedTables {
 		var name string

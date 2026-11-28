@@ -753,8 +753,8 @@ func TestWebhookConcurrencyLifecycleLimitsAndSSRF(t *testing.T) {
 }
 
 func TestWebhookURLAndTypeValidation(t *testing.T) {
-	if len(AllEventTypes()) != 11 {
-		t.Fatalf("expected 11 canonical event types, got %d", len(AllEventTypes()))
+	if len(AllEventTypes()) != 14 {
+		t.Fatalf("expected 14 canonical event types, got %d", len(AllEventTypes()))
 	}
 	for _, ev := range AllEventTypes() {
 		if !IsValidEventType(ev) || !IsValidSubscriptionEvent(ev) {

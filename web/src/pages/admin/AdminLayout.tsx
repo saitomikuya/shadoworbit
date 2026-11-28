@@ -6,6 +6,7 @@ import {
   Cpu,
   ExternalLink,
   FileCode2,
+  GitFork,
   KeyRound,
   LayoutDashboard,
   LogOut,
@@ -26,6 +27,7 @@ import { Modal } from '../../components/Modal';
 const NAV_ITEMS = [
   { to: '/admin', label: '概览', icon: LayoutDashboard, end: true },
   { to: '/admin/nodes', label: '节点管理', icon: Server, end: false },
+  { to: '/admin/lb-groups', label: '负载均衡', icon: GitFork, end: false },
   { to: '/admin/users', label: '用户管理', icon: Users, end: false },
   { to: '/admin/templates', label: '订阅模板', icon: FileCode2, end: false },
   { to: '/admin/kernels', label: '内核管理', icon: Cpu, end: false },

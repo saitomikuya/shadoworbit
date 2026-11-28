@@ -200,3 +200,79 @@ type WebhookChannel struct {
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
 }
+
+// LBActiveRecord describes one DNS A record currently synced for an LB group.
+type LBActiveRecord struct {
+	NodeID      int64  `json:"node_id"`
+	NodeName    string `json:"node_name"`
+	IP          string `json:"ip"`
+	Weight      int    `json:"weight,omitempty"`
+	RecordSetID string `json:"recordset_id,omitempty"`
+}
+
+// LBGroupMember links a node into a load-balancing group with an explicit priority order.
+type LBGroupMember struct {
+	GroupID   int64     `json:"group_id"`
+	NodeID    int64     `json:"node_id"`
+	Priority  int       `json:"priority"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// LBGroupSummary holds lightweight group metadata for node/user views.
+type LBGroupSummary struct {
+	ID      int64  `json:"id"`
+	Name    string `json:"name"`
+	Enabled bool   `json:"enabled"`
+}
+
+// LBGroup represents a DNS load-balancing group sharing one unified domain entry.
+type LBGroup struct {
+	ID                       int64                `json:"id"`
+	Name                     string               `json:"name"`
+	RegionTag                string               `json:"region_tag"`
+	Enabled                  bool                 `json:"enabled"`
+	SortOrder                int                  `json:"sort_order"`
+	DNSZoneID                string               `json:"dns_zone_id"`
+	DNSZoneName              string               `json:"dns_zone_name"`
+	DNSDomain                string               `json:"dns_domain"`
+	DNSTTL                   int                  `json:"dns_ttl"`
+	Strategy                 string               `json:"strategy"`
+	SwitchDiffBytes          int64                `json:"switch_diff_bytes"`
+	SwitchCooldownMinutes    int                  `json:"switch_cooldown_minutes"`
+	FailoverThresholdPercent int                  `json:"failover_threshold_percent"`
+	SnellConfig              protocol.SnellConfig `json:"snell_config"`
+	SSConfig                 protocol.SSConfig    `json:"ss_config"`
+	PinnedNodeID             *int64               `json:"pinned_node_id"`
+	ActiveNodeID             *int64               `json:"active_node_id"`
+	ActiveRecords            []LBActiveRecord     `json:"active_records"`
+	LastSwitchAt             *time.Time           `json:"last_switch_at"`
+	LastSyncAt               *time.Time           `json:"last_sync_at"`
+	LastSyncError            string               `json:"last_sync_error"`
+	IsExhausted              bool                 `json:"is_exhausted"`
+	Members                  []LBGroupMember      `json:"members"`
+	CreatedAt                time.Time            `json:"created_at"`
+	UpdatedAt                time.Time            `json:"updated_at"`
+}
+
+// LBGroupSyncState captures DNS synchronization state persisted after an LB evaluation.
+type LBGroupSyncState struct {
+	ActiveNodeID  *int64
+	ActiveRecords []LBActiveRecord
+	LastSwitchAt  *time.Time
+	LastSyncAt    *time.Time
+	LastSyncError string
+	IsExhausted   bool
+}
+
+// LBSwitchLog records a DNS load-balancing switch, failover, pin, or error event.
+type LBSwitchLog struct {
+	ID         int64     `json:"id"`
+	GroupID    int64     `json:"group_id"`
+	EventType  string    `json:"event_type"`
+	FromNodeID *int64    `json:"from_node_id"`
+	ToNodeID   *int64    `json:"to_node_id"`
+	FromIPs    string    `json:"from_ips"`
+	ToIPs      string    `json:"to_ips"`
+	Reason     string    `json:"reason"`
+	CreatedAt  time.Time `json:"created_at"`
+}

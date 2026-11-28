@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -44,6 +45,7 @@ type mihomoShadowTLSOpts struct {
 
 type userNodeEntry struct {
 	node    store.Node
+	isGroup bool
 	host    string
 	tcpPort int
 	udpPort int
@@ -114,8 +116,12 @@ func (r *Renderer) RenderUser(ctx context.Context, token string, userAgent strin
 	if err != nil {
 		return nil, err
 	}
+	lbGroups, err := r.store.ListLBGroups(ctx)
+	if err != nil {
+		return nil, err
+	}
 
-	entries := filterUserNodes(nodes, user)
+	entries := filterUserNodesWithGroups(nodes, lbGroups, user)
 
 	switch target {
 	case protocol.SubTargetMihomo:
@@ -129,73 +135,139 @@ func (r *Renderer) RenderUser(ctx context.Context, token string, userAgent strin
 	}
 }
 
+func buildUserNodeEntry(n store.Node, user *store.User, isGroup bool) (userNodeEntry, bool) {
+	if !n.Enabled || n.IsTrafficPaused || !n.SSConfig.Enabled {
+		return userNodeEntry{}, false
+	}
+
+	var uPSK string
+	switch n.SSConfig.Cipher {
+	case protocol.CipherAES128GCM:
+		uPSK = user.SSUPSK16
+	case protocol.CipherAES256GCM:
+		uPSK = user.SSUPSK32
+	default:
+		return userNodeEntry{}, false
+	}
+
+	if err := auth.ValidateSS2022Key(n.SSConfig.IPSK, n.SSConfig.Cipher); err != nil {
+		return userNodeEntry{}, false
+	}
+	if err := auth.ValidateSS2022Key(uPSK, n.SSConfig.Cipher); err != nil {
+		return userNodeEntry{}, false
+	}
+
+	sni, ok := normalizeSNIHost(n.SSConfig.STLSSNI)
+	if !ok {
+		return userNodeEntry{}, false
+	}
+
+	host, ok := resolveEntryHost(n)
+	if !ok {
+		return userNodeEntry{}, false
+	}
+
+	tcpPort := n.CustomEntryPort
+	if tcpPort <= 0 {
+		tcpPort = n.SSConfig.TCPPort
+	}
+	if tcpPort < 1 || tcpPort > 65535 {
+		return userNodeEntry{}, false
+	}
+
+	udpPort := n.SSConfig.UDPPort
+	if udpPort <= 0 || (n.CustomEntryPort > 0 && n.SSConfig.UDPPort == n.SSConfig.TCPPort) {
+		udpPort = tcpPort
+	}
+	if udpPort < 1 || udpPort > 65535 {
+		return userNodeEntry{}, false
+	}
+
+	return userNodeEntry{
+		node:    n,
+		isGroup: isGroup,
+		host:    host,
+		tcpPort: tcpPort,
+		udpPort: udpPort,
+		cipher:  n.SSConfig.Cipher,
+		iPSK:    n.SSConfig.IPSK,
+		uPSK:    uPSK,
+		stlsPwd: user.STLSPassword,
+		sni:     sni,
+		tfo:     n.SSConfig.TFO,
+	}, true
+}
+
 func filterUserNodes(nodes []store.Node, user *store.User) []userNodeEntry {
-	out := make([]userNodeEntry, 0, len(nodes))
+	return filterUserNodesWithGroups(nodes, nil, user)
+}
+
+func filterUserNodesWithGroups(nodes []store.Node, lbGroups []store.LBGroup, user *store.User) []userNodeEntry {
+	out := make([]userNodeEntry, 0, len(nodes)+len(lbGroups))
 	if user.STLSPassword == "" || hasControlChars(user.STLSPassword) {
 		return out
 	}
 
+	authNodeMap := make(map[int64]store.Node, len(nodes))
 	for _, n := range nodes {
-		if !n.Enabled || n.IsTrafficPaused || !n.SSConfig.Enabled {
-			continue
-		}
-
-		var uPSK string
-		switch n.SSConfig.Cipher {
-		case protocol.CipherAES128GCM:
-			uPSK = user.SSUPSK16
-		case protocol.CipherAES256GCM:
-			uPSK = user.SSUPSK32
-		default:
-			continue
-		}
-
-		if err := auth.ValidateSS2022Key(n.SSConfig.IPSK, n.SSConfig.Cipher); err != nil {
-			continue
-		}
-		if err := auth.ValidateSS2022Key(uPSK, n.SSConfig.Cipher); err != nil {
-			continue
-		}
-
-		sni, ok := normalizeSNIHost(n.SSConfig.STLSSNI)
-		if !ok {
-			continue
-		}
-
-		host, ok := resolveEntryHost(n)
-		if !ok {
-			continue
-		}
-
-		tcpPort := n.CustomEntryPort
-		if tcpPort <= 0 {
-			tcpPort = n.SSConfig.TCPPort
-		}
-		if tcpPort < 1 || tcpPort > 65535 {
-			continue
-		}
-
-		udpPort := n.SSConfig.UDPPort
-		if udpPort <= 0 || (n.CustomEntryPort > 0 && n.SSConfig.UDPPort == n.SSConfig.TCPPort) {
-			udpPort = tcpPort
-		}
-		if udpPort < 1 || udpPort > 65535 {
-			continue
-		}
-
-		out = append(out, userNodeEntry{
-			node:    n,
-			host:    host,
-			tcpPort: tcpPort,
-			udpPort: udpPort,
-			cipher:  n.SSConfig.Cipher,
-			iPSK:    n.SSConfig.IPSK,
-			uPSK:    uPSK,
-			stlsPwd: user.STLSPassword,
-			sni:     sni,
-			tfo:     n.SSConfig.TFO,
-		})
+		authNodeMap[n.ID] = n
 	}
+
+	hiddenNodeIDs := make(map[int64]bool)
+	for _, g := range lbGroups {
+		if !g.Enabled {
+			continue
+		}
+		for _, m := range g.Members {
+			hiddenNodeIDs[m.NodeID] = true
+		}
+	}
+
+	for _, n := range nodes {
+		if hiddenNodeIDs[n.ID] {
+			continue
+		}
+		if entry, ok := buildUserNodeEntry(n, user, false); ok {
+			out = append(out, entry)
+		}
+	}
+
+	for _, g := range lbGroups {
+		if !g.Enabled || !g.SSConfig.Enabled || strings.TrimSpace(g.DNSDomain) == "" {
+			continue
+		}
+		authorizedMember := false
+		for _, m := range g.Members {
+			if _, ok := authNodeMap[m.NodeID]; ok {
+				authorizedMember = true
+				break
+			}
+		}
+		if !authorizedMember {
+			continue
+		}
+		synthetic := store.Node{
+			ID:              g.ID,
+			Name:            g.Name,
+			SortOrder:       g.SortOrder,
+			Enabled:         true,
+			CustomEntryHost: g.DNSDomain,
+			SSConfig:        g.SSConfig,
+		}
+		if entry, ok := buildUserNodeEntry(synthetic, user, true); ok {
+			out = append(out, entry)
+		}
+	}
+
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].node.SortOrder != out[j].node.SortOrder {
+			return out[i].node.SortOrder < out[j].node.SortOrder
+		}
+		if out[i].isGroup != out[j].isGroup {
+			return !out[i].isGroup
+		}
+		return out[i].node.ID < out[j].node.ID
+	})
 	return out
 }
 

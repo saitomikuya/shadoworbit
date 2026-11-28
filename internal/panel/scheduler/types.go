@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"snell-panel/internal/panel/dnsprovider"
 	"snell-panel/internal/panel/webhook"
 )
 
@@ -39,6 +40,9 @@ var (
 type AlertNotifier interface {
 	Notify(ctx context.Context, evt webhook.AlertEvent)
 }
+
+// DNSProviderFactory constructs a DNS provider for the given Huawei Cloud credentials.
+type DNSProviderFactory func(endpoint, ak, sk string) (dnsprovider.Provider, error)
 
 // Option configures Scheduler behavior.
 type Option func(*Scheduler)
@@ -104,6 +108,15 @@ func WithHTTPClient(client *http.Client) Option {
 	return func(s *Scheduler) {
 		if client != nil {
 			s.httpClient = client
+		}
+	}
+}
+
+// WithDNSProviderFactory overrides the DNS provider constructor (primarily for testing).
+func WithDNSProviderFactory(fn DNSProviderFactory) Option {
+	return func(s *Scheduler) {
+		if fn != nil {
+			s.dnsProviderFactory = fn
 		}
 	}
 }

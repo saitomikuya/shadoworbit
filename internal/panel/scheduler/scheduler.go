@@ -33,6 +33,7 @@ type Scheduler struct {
 	kernelSyncInterval      time.Duration
 	githubAPIBaseURL        string
 	httpClient              *http.Client
+	dnsProviderFactory      DNSProviderFactory
 
 	lifecycleMu sync.Mutex
 	started     bool
@@ -46,6 +47,9 @@ type Scheduler struct {
 
 	userLocksMu sync.Mutex
 	userLocks   map[int64]*sync.Mutex
+
+	groupLocksMu sync.Mutex
+	groupLocks   map[int64]*sync.Mutex
 
 	kernelsMu sync.Mutex
 
@@ -69,6 +73,7 @@ func NewScheduler(st *store.Store, h *hub.Hub, notifier AlertNotifier, opts ...O
 		httpClient:         &http.Client{Timeout: defaultHTTPTimeout},
 		nodeLocks:          make(map[int64]*sync.Mutex),
 		userLocks:          make(map[int64]*sync.Mutex),
+		groupLocks:         make(map[int64]*sync.Mutex),
 		nodeWarned:         make(map[int64]bool),
 		userStates:         make(map[int64]userLifecycleState),
 	}
@@ -128,11 +133,40 @@ func (s *Scheduler) WireHub() {
 			if err := s.EvaluateNodeThreshold(detachedCtx, node.ID); err != nil {
 				s.logger.Warn("scheduler: evaluate node threshold failed", "node_id", node.ID, "err", err)
 			}
+			if err := s.EvaluateLBGroupForNode(detachedCtx, node.ID); err != nil {
+				s.logger.Warn("scheduler: evaluate lb group on traffic update failed", "node_id", node.ID, "err", err)
+			}
 		}
 		if len(updatedUserIDs) > 0 {
 			if err := s.EvaluateUsers(detachedCtx, updatedUserIDs); err != nil {
 				s.logger.Warn("scheduler: evaluate users failed", "err", err)
 			}
+		}
+	})
+
+	s.hub.SetOnNodeStateChanged(func(cbCtx context.Context, nodeID int64) {
+		s.lifecycleMu.Lock()
+		stopped := s.stopped
+		schedCtx := s.ctx
+		s.lifecycleMu.Unlock()
+
+		if stopped || (schedCtx != nil && schedCtx.Err() != nil) || nodeID <= 0 {
+			return
+		}
+
+		base := context.Background()
+		if cbCtx != nil {
+			base = context.WithoutCancel(cbCtx)
+		}
+		detachedCtx, cancel := context.WithTimeout(base, trafficCallbackTimeout)
+		if schedCtx != nil {
+			stopAfter := context.AfterFunc(schedCtx, cancel)
+			defer stopAfter()
+		}
+		defer cancel()
+
+		if err := s.EvaluateLBGroupForNode(detachedCtx, nodeID); err != nil {
+			s.logger.Warn("scheduler: evaluate lb group on node state change failed", "node_id", nodeID, "err", err)
 		}
 	})
 }
@@ -257,6 +291,12 @@ func (s *Scheduler) runSweep(ctx context.Context) {
 	if err := s.SweepUsers(ctx, now); err != nil && ctx.Err() == nil {
 		s.logger.Warn("scheduler: sweep users failed", "err", err)
 	}
+	if ctx.Err() != nil {
+		return
+	}
+	if err := s.SweepLBGroups(ctx); err != nil && ctx.Err() == nil {
+		s.logger.Warn("scheduler: sweep lb groups failed", "err", err)
+	}
 }
 
 func (s *Scheduler) nodeLock(nodeID int64) *sync.Mutex {
@@ -278,6 +318,17 @@ func (s *Scheduler) userLock(userID int64) *sync.Mutex {
 		s.userLocks[userID] = mu
 	}
 	s.userLocksMu.Unlock()
+	return mu
+}
+
+func (s *Scheduler) groupLock(groupID int64) *sync.Mutex {
+	s.groupLocksMu.Lock()
+	mu, ok := s.groupLocks[groupID]
+	if !ok {
+		mu = &sync.Mutex{}
+		s.groupLocks[groupID] = mu
+	}
+	s.groupLocksMu.Unlock()
 	return mu
 }
 

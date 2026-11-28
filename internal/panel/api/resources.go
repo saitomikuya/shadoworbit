@@ -6,12 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"text/template"
 	"time"
 
 	"snell-panel/internal/panel/auth"
+	"snell-panel/internal/panel/dnsprovider"
 	"snell-panel/internal/panel/hub"
 	"snell-panel/internal/panel/scheduler"
 	"snell-panel/internal/panel/store"
@@ -1048,9 +1050,24 @@ type safeSettingsDTO struct {
 	DefaultUpstreamDNS      string `json:"default_upstream_dns"`
 	DefaultLocalDNSPort     int    `json:"default_local_dns_port"`
 	AgentDockerImage        string `json:"agent_docker_image"`
-	TrafficLogMaxEntries    int    `json:"traffic_log_max_entries"`
-	AlertUserExpired        bool   `json:"alert_user_expired"`
-	AlertUserQuotaExhausted bool   `json:"alert_user_quota_exhausted"`
+	TrafficLogMaxEntries       int    `json:"traffic_log_max_entries"`
+	AlertUserExpired           bool   `json:"alert_user_expired"`
+	AlertUserQuotaExhausted    bool   `json:"alert_user_quota_exhausted"`
+	HuaweiCloudDNSEndpoint     string `json:"huaweicloud_dns_endpoint"`
+	HuaweiCloudDNSAK           string `json:"huaweicloud_dns_ak"`
+	HuaweiCloudDNSSKConfigured bool   `json:"huaweicloud_dns_sk_configured"`
+	HuaweiCloudDNSSKMasked     string `json:"huaweicloud_dns_sk_masked"`
+}
+
+func maskSecret(raw string) string {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return ""
+	}
+	if len(s) <= 8 {
+		return "****"
+	}
+	return s[:4] + "****" + s[len(s)-4:]
 }
 
 func buildSafeSettingsDTO(all map[string]string) safeSettingsDTO {
@@ -1101,20 +1118,31 @@ func buildSafeSettingsDTO(all map[string]string) safeSettingsDTO {
 		logMaxEntries = store.DefaultTrafficLogMaxEntries
 	}
 
+	hwEndpoint := strings.TrimSpace(all[scheduler.SettingHuaweiCloudDNSEndpoint])
+	if hwEndpoint == "" {
+		hwEndpoint = dnsprovider.DefaultHuaweiCloudEndpoint
+	}
+	hwAK := strings.TrimSpace(all[scheduler.SettingHuaweiCloudDNSAK])
+	hwSK := strings.TrimSpace(all[scheduler.SettingHuaweiCloudDNSSK])
+
 	return safeSettingsDTO{
-		SiteTitle:               siteTitle,
-		Announcement:            all["announcement"],
-		PercentageOnly:          parseBool("public_percentage_only", false),
-		AdminSubToken:           all["admin_sub_token"],
-		AlertCooldownMinutes:    parseInt("alert_cooldown_minutes", 15),
-		WarningThresholdPercent: parseInt("warning_threshold_percent", 85),
-		OfflineTimeoutSeconds:   parseInt("offline_timeout_seconds", 60),
-		DefaultUpstreamDNS:      upstreamDNS,
-		DefaultLocalDNSPort:     parseInt("default_local_dns_port", 15353),
-		AgentDockerImage:        agentDockerImage,
-		TrafficLogMaxEntries:    logMaxEntries,
-		AlertUserExpired:        parseBool("alert_user_expired", true),
-		AlertUserQuotaExhausted: parseBool("alert_user_quota_exhausted", true),
+		SiteTitle:                  siteTitle,
+		Announcement:               all["announcement"],
+		PercentageOnly:             parseBool("public_percentage_only", false),
+		AdminSubToken:              all["admin_sub_token"],
+		AlertCooldownMinutes:       parseInt("alert_cooldown_minutes", 15),
+		WarningThresholdPercent:    parseInt("warning_threshold_percent", 85),
+		OfflineTimeoutSeconds:      parseInt("offline_timeout_seconds", 60),
+		DefaultUpstreamDNS:         upstreamDNS,
+		DefaultLocalDNSPort:        parseInt("default_local_dns_port", 15353),
+		AgentDockerImage:           agentDockerImage,
+		TrafficLogMaxEntries:       logMaxEntries,
+		AlertUserExpired:           parseBool("alert_user_expired", true),
+		AlertUserQuotaExhausted:    parseBool("alert_user_quota_exhausted", true),
+		HuaweiCloudDNSEndpoint:     hwEndpoint,
+		HuaweiCloudDNSAK:           hwAK,
+		HuaweiCloudDNSSKConfigured: hwSK != "",
+		HuaweiCloudDNSSKMasked:     maskSecret(hwSK),
 	}
 }
 
@@ -1307,6 +1335,51 @@ func (s *server) handleUpdateSettings(w http.ResponseWriter, r *http.Request, _ 
 				return
 			}
 			updates["alert_user_quota_exhausted"] = strconv.FormatBool(v)
+		case "huaweicloud_dns_endpoint":
+			v, err := parseFlexibleString(rawVal)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid huaweicloud_dns_endpoint")
+				return
+			}
+			v = strings.TrimRight(strings.TrimSpace(v), "/")
+			if v == "" {
+				v = dnsprovider.DefaultHuaweiCloudEndpoint
+			} else {
+				u, uErr := url.Parse(v)
+				if uErr != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+					writeError(w, http.StatusBadRequest, "huaweicloud_dns_endpoint must be a valid http/https URL")
+					return
+				}
+			}
+			updates[scheduler.SettingHuaweiCloudDNSEndpoint] = v
+		case "huaweicloud_dns_ak":
+			v, err := parseFlexibleString(rawVal)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid huaweicloud_dns_ak")
+				return
+			}
+			updates[scheduler.SettingHuaweiCloudDNSAK] = strings.TrimSpace(v)
+		case "huaweicloud_dns_sk":
+			v, err := parseFlexibleString(rawVal)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid huaweicloud_dns_sk")
+				return
+			}
+			v = strings.TrimSpace(v)
+			if v != "" {
+				updates[scheduler.SettingHuaweiCloudDNSSK] = v
+			}
+		case "clear_huaweicloud_dns_sk":
+			v, err := parseFlexibleBool(rawVal)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid clear_huaweicloud_dns_sk")
+				return
+			}
+			if v {
+				updates[scheduler.SettingHuaweiCloudDNSSK] = ""
+			}
+		case "huaweicloud_dns_sk_configured", "huaweicloud_dns_sk_masked":
+			// Read-only metadata fields; ignore if echoed by clients.
 		default:
 			writeError(w, http.StatusBadRequest, fmt.Sprintf("setting key %q is not writable", key))
 			return

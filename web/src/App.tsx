@@ -7,6 +7,7 @@ import { LoginPage } from './pages/admin/LoginPage';
 import { AdminLayout } from './pages/admin/AdminLayout';
 import { OverviewPage } from './pages/admin/OverviewPage';
 import { NodesPage } from './pages/admin/NodesPage';
+import { LBGroupsPage } from './pages/admin/LBGroupsPage';
 import { UsersPage } from './pages/admin/UsersPage';
 import { TemplatesPage } from './pages/admin/TemplatesPage';
 import { KernelsPage } from './pages/admin/KernelsPage';
@@ -39,6 +40,7 @@ export function App() {
               <Route path="/admin" element={<AdminGate />}>
                 <Route index element={<OverviewPage />} />
                 <Route path="nodes" element={<NodesPage />} />
+                <Route path="lb-groups" element={<LBGroupsPage />} />
                 <Route path="users" element={<UsersPage />} />
                 <Route path="dns-rules" element={<Navigate to="/admin/settings?tab=dns-rules" replace />} />
                 <Route path="templates" element={<TemplatesPage />} />

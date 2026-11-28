@@ -99,6 +99,13 @@ const (
 	WebhookProviderCustom     = "custom"
 )
 
+// DNS Load-Balancing Group strategies.
+const (
+	LBStrategyRemainingBalance = "remaining_balance"
+	LBStrategyFailover         = "failover"
+	LBStrategyWeightedMulti    = "weighted_multi"
+)
+
 // IsValidNodeStatus reports whether s is a valid node status.
 func IsValidNodeStatus(s string) bool {
 	return s == NodeStatusOnline || s == NodeStatusOffline || s == NodeStatusTrafficPaused
@@ -157,4 +164,9 @@ func IsValidClientType(c string) bool {
 // IsValidWebhookProvider reports whether p is a supported webhook provider.
 func IsValidWebhookProvider(p string) bool {
 	return p == WebhookProviderFeishu || p == WebhookProviderDingTalk || p == WebhookProviderWeCom || p == WebhookProviderServerChan || p == WebhookProviderCustom
+}
+
+// IsValidLBStrategy reports whether s is a supported load-balancing group strategy.
+func IsValidLBStrategy(s string) bool {
+	return s == LBStrategyRemainingBalance || s == LBStrategyFailover || s == LBStrategyWeightedMulti
 }

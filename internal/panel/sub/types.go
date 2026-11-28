@@ -40,6 +40,7 @@ var (
 type subStore interface {
 	GetSetting(ctx context.Context, key string) (string, error)
 	ListNodes(ctx context.Context) ([]store.Node, error)
+	ListLBGroups(ctx context.Context) ([]store.LBGroup, error)
 	GetUserBySubToken(ctx context.Context, subToken string) (*store.User, error)
 	ListAuthorizedNodesForUser(ctx context.Context, userID int64) ([]store.Node, error)
 	GetSubTemplateByID(ctx context.Context, id int64) (*store.SubTemplate, error)

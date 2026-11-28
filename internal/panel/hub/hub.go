@@ -34,8 +34,9 @@ type Hub struct {
 	publicDebounce    time.Duration
 	offlineAlertDelay time.Duration
 
-	callbackMu       sync.RWMutex
-	onTrafficUpdated TrafficUpdatedFunc
+	callbackMu         sync.RWMutex
+	onTrafficUpdated   TrafficUpdatedFunc
+	onNodeStateChanged NodeStateChangedFunc
 
 	baseCtx    context.Context
 	cancelBase context.CancelFunc
@@ -116,6 +117,25 @@ func (h *Hub) getOnTrafficUpdated() TrafficUpdatedFunc {
 	fn := h.onTrafficUpdated
 	h.callbackMu.RUnlock()
 	return fn
+}
+
+// SetOnNodeStateChanged registers or replaces the callback invoked when a node connects, disconnects, or updates health/IP.
+func (h *Hub) SetOnNodeStateChanged(fn NodeStateChangedFunc) {
+	h.callbackMu.Lock()
+	h.onNodeStateChanged = fn
+	h.callbackMu.Unlock()
+}
+
+func (h *Hub) emitNodeStateChanged(ctx context.Context, nodeID int64) {
+	if h == nil || nodeID <= 0 {
+		return
+	}
+	h.callbackMu.RLock()
+	fn := h.onNodeStateChanged
+	h.callbackMu.RUnlock()
+	if fn != nil {
+		fn(ctx, nodeID)
+	}
 }
 
 // Close cancels the hub context, closes all active agent and public WS connections,
@@ -304,6 +324,7 @@ func (h *Hub) CheckHeartbeats(ctx context.Context, offlineTimeout time.Duration)
 
 	now := h.now().UTC()
 	var anyStatusChanged bool
+	var offlineChangedIDs []int64
 
 	for _, n := range nodes {
 		if !n.Enabled || n.LastSeenAt == nil {
@@ -398,6 +419,7 @@ func (h *Hub) CheckHeartbeats(ctx context.Context, offlineTimeout time.Duration)
 				}
 			} else {
 				anyStatusChanged = true
+				offlineChangedIDs = append(offlineChangedIDs, n.ID)
 			}
 		}
 		nodeStatusMu.Unlock()
@@ -420,6 +442,9 @@ func (h *Hub) CheckHeartbeats(ctx context.Context, offlineTimeout time.Duration)
 
 	if anyStatusChanged {
 		h.triggerPublicBroadcast()
+	}
+	for _, nid := range offlineChangedIDs {
+		h.emitNodeStateChanged(ctx, nid)
 	}
 
 	return nil

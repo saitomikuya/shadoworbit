@@ -11,6 +11,7 @@ export type SubMode = 'full' | 'proxy';
 export type TemplateClientType = 'surge_admin' | 'mihomo_user' | 'surge_user';
 export type KernelName = 'sing-box' | 'snell-server' | 'shadow-tls';
 export type WebhookProvider = 'feishu' | 'dingtalk' | 'wecom' | 'serverchan' | 'custom';
+export type LBStrategy = 'remaining_balance' | 'failover' | 'weighted_multi';
 
 export const CANONICAL_WEBHOOK_EVENTS = [
   'node_offline',
@@ -24,6 +25,9 @@ export const CANONICAL_WEBHOOK_EVENTS = [
   'user_quota_exhausted',
   'user_expired',
   'high_resource_usage',
+  'dns_lb_switched',
+  'dns_lb_failover',
+  'dns_lb_exhausted',
 ] as const;
 
 export interface PublicNodeView {
@@ -150,6 +154,8 @@ export interface NodeDTO {
   tx_bps: number;
   core_a_healthy: boolean;
   core_b_healthy: boolean;
+  lb_group_id?: number | null;
+  lb_group_name?: string;
   created_at: string;
   updated_at: string;
 }
@@ -445,4 +451,115 @@ export interface SystemSettings {
   traffic_log_max_entries: number;
   alert_user_expired: boolean;
   alert_user_quota_exhausted: boolean;
+  huaweicloud_dns_endpoint: string;
+  huaweicloud_dns_ak: string;
+  huaweicloud_dns_sk_configured: boolean;
+  huaweicloud_dns_sk_masked: string;
+}
+
+export interface UpdateSettingsRequest extends Partial<SystemSettings> {
+  huaweicloud_dns_sk?: string;
+  clear_huaweicloud_dns_sk?: boolean;
+}
+
+export interface HuaweiCloudZone {
+  id: string;
+  name: string;
+  status: string;
+  ttl: number;
+  record_num: number;
+}
+
+export interface HuaweiCloudTestResponse {
+  ok: boolean;
+  zones_count: number;
+  zones: HuaweiCloudZone[];
+}
+
+export interface LBActiveRecord {
+  node_id: number;
+  node_name: string;
+  ip: string;
+  weight?: number;
+  recordset_id?: string;
+}
+
+export interface LBGroupMemberView {
+  node_id: number;
+  priority: number;
+  node_name: string;
+  region_tag: string;
+  enabled: boolean;
+  online: boolean;
+  status: NodeStatus;
+  public_ip: string;
+  core_a_healthy: boolean;
+  core_b_healthy: boolean;
+  is_traffic_paused: boolean;
+  counted_bytes: number;
+  budget_bytes: number;
+  remaining_bytes: number;
+  traffic_limit_bytes: number;
+  traffic_threshold_bytes: number;
+  traffic_count_mode: TrafficCountMode;
+}
+
+export interface LBGroupDTO {
+  id: number;
+  name: string;
+  region_tag: string;
+  enabled: boolean;
+  sort_order: number;
+  dns_zone_id: string;
+  dns_zone_name: string;
+  dns_domain: string;
+  dns_ttl: number;
+  strategy: LBStrategy;
+  switch_diff_bytes: number;
+  switch_cooldown_minutes: number;
+  failover_threshold_percent: number;
+  snell_config: SnellConfig;
+  ss_config: SSConfig;
+  pinned_node_id: number | null;
+  active_node_id: number | null;
+  active_node_name: string;
+  active_records: LBActiveRecord[];
+  last_switch_at: string | null;
+  last_sync_at: string | null;
+  last_sync_error: string;
+  is_exhausted: boolean;
+  member_node_ids: number[];
+  members: LBGroupMemberView[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LBGroupUpsertRequest {
+  name: string;
+  region_tag: string;
+  enabled: boolean;
+  sort_order: number;
+  dns_zone_id: string;
+  dns_zone_name: string;
+  dns_domain: string;
+  dns_ttl: number;
+  strategy: LBStrategy;
+  switch_diff_bytes: number;
+  switch_cooldown_minutes: number;
+  failover_threshold_percent: number;
+  snell_config: SnellConfig;
+  ss_config: SSConfig;
+  member_node_ids: number[];
+}
+
+export interface LBSwitchLog {
+  id: number;
+  group_id: number;
+  event_type: string;
+  from_node_id: number | null;
+  to_node_id: number | null;
+  from_ips: string;
+  to_ips: string;
+  reason: string;
+  created_at: string;
 }

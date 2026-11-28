@@ -19,6 +19,9 @@ const (
 	EventUserQuotaExhausted = "user_quota_exhausted"
 	EventUserExpired        = "user_expired"
 	EventHighResourceUsage  = "high_resource_usage"
+	EventDNSLBSwitched      = "dns_lb_switched"
+	EventDNSLBFailover      = "dns_lb_failover"
+	EventDNSLBExhausted     = "dns_lb_exhausted"
 	EventTest               = "test" // synthetic event used by SendTest
 )
 
@@ -31,9 +34,10 @@ const (
 
 // Target types used in AlertEvent.TargetType.
 const (
-	TargetTypeNode   = "node"
-	TargetTypeUser   = "user"
-	TargetTypeSystem = "system"
+	TargetTypeNode    = "node"
+	TargetTypeUser    = "user"
+	TargetTypeSystem  = "system"
+	TargetTypeLBGroup = "lb_group"
 )
 
 // Sentinel errors returned by webhook validation and delivery.
@@ -59,7 +63,7 @@ type AlertEvent struct {
 	Timestamp  time.Time `json:"timestamp"`
 }
 
-// AllEventTypes returns the 11 canonical subscribable alert event types.
+// AllEventTypes returns the 14 canonical subscribable alert event types.
 func AllEventTypes() []string {
 	return []string{
 		EventNodeOffline,
@@ -73,10 +77,13 @@ func AllEventTypes() []string {
 		EventUserQuotaExhausted,
 		EventUserExpired,
 		EventHighResourceUsage,
+		EventDNSLBSwitched,
+		EventDNSLBFailover,
+		EventDNSLBExhausted,
 	}
 }
 
-// IsValidEventType reports whether t is one of the 11 canonical alert event types.
+// IsValidEventType reports whether t is one of the 14 canonical alert event types.
 func IsValidEventType(t string) bool {
 	switch t {
 	case EventNodeOffline,
@@ -89,7 +96,10 @@ func IsValidEventType(t string) bool {
 		EventTrafficRecovered,
 		EventUserQuotaExhausted,
 		EventUserExpired,
-		EventHighResourceUsage:
+		EventHighResourceUsage,
+		EventDNSLBSwitched,
+		EventDNSLBFailover,
+		EventDNSLBExhausted:
 		return true
 	default:
 		return false
@@ -119,7 +129,7 @@ func normalizeEvent(evt AlertEvent, now func() time.Time) AlertEvent {
 		switch {
 		case evt.Resolved:
 			evt.Severity = SeverityInfo
-		case evt.Type == EventNodeOffline || evt.Type == EventProcessCrashed || evt.Type == EventTrafficPaused:
+		case evt.Type == EventNodeOffline || evt.Type == EventProcessCrashed || evt.Type == EventTrafficPaused || evt.Type == EventDNSLBExhausted:
 			evt.Severity = SeverityCritical
 		default:
 			evt.Severity = SeverityWarning

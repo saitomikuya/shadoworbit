@@ -210,7 +210,17 @@ func (s *server) handleCreateUser(w http.ResponseWriter, r *http.Request, _ *aut
 		ExpireAt:          expireAt,
 	}
 
-	nodeIDs, err := s.store.CreateUserWithNodes(r.Context(), user, req.NodeIDs)
+	requestedNodeIDs := req.NodeIDs
+	if len(requestedNodeIDs) > 0 {
+		expanded, expErr := s.store.ExpandUserNodeIDsForLBGroups(r.Context(), nil, requestedNodeIDs)
+		if expErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to expand group node access")
+			return
+		}
+		requestedNodeIDs = expanded
+	}
+
+	nodeIDs, err := s.store.CreateUserWithNodes(r.Context(), user, requestedNodeIDs)
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrConflict):
@@ -313,7 +323,22 @@ func (s *server) handleUpdateUser(w http.ResponseWriter, r *http.Request, _ *aut
 		updated.ExpireAt = req.ExpireAt.value
 	}
 
-	oldIDs, newIDs, err := s.store.UpdateUserWithNodes(r.Context(), &updated, req.NodeIDs)
+	reqNodeIDs := req.NodeIDs
+	if reqNodeIDs != nil {
+		curIDs, err := s.store.GetUserNodeIDs(r.Context(), id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load current user nodes")
+			return
+		}
+		expanded, expErr := s.store.ExpandUserNodeIDsForLBGroups(r.Context(), curIDs, *reqNodeIDs)
+		if expErr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to expand group node access")
+			return
+		}
+		reqNodeIDs = &expanded
+	}
+
+	oldIDs, newIDs, err := s.store.UpdateUserWithNodes(r.Context(), &updated, reqNodeIDs)
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrNotFound):
@@ -616,7 +641,18 @@ func (s *server) handleSetUserNodes(w http.ResponseWriter, r *http.Request, _ *a
 		return
 	}
 
-	oldIDs, newIDs, err := s.store.ReplaceUserNodes(r.Context(), id, req.NodeIDs)
+	curIDs, err := s.store.GetUserNodeIDs(r.Context(), id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load current user nodes")
+		return
+	}
+	expandedIDs, err := s.store.ExpandUserNodeIDsForLBGroups(r.Context(), curIDs, req.NodeIDs)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to expand group node access")
+		return
+	}
+
+	oldIDs, newIDs, err := s.store.ReplaceUserNodes(r.Context(), id, expandedIDs)
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrNotFound):

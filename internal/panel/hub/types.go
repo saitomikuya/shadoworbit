@@ -38,6 +38,9 @@ type AlertNotifier interface {
 // TrafficUpdatedFunc is invoked after agent.metrics traffic deltas are persisted.
 type TrafficUpdatedFunc func(ctx context.Context, node *store.Node, updatedUserIDs []int64)
 
+// NodeStateChangedFunc is invoked when a node's connection state or public IP/health state changes.
+type NodeStateChangedFunc func(ctx context.Context, nodeID int64)
+
 // NodeTelemetry holds the latest in-memory runtime telemetry for a node.
 type NodeTelemetry struct {
 	NodeID                 int64

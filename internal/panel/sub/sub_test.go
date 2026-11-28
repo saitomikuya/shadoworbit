@@ -1688,6 +1688,10 @@ func (s *stubSubStore) ListNodes(_ context.Context) ([]store.Node, error) {
 	return s.nodes, nil
 }
 
+func (s *stubSubStore) ListLBGroups(_ context.Context) ([]store.LBGroup, error) {
+	return nil, nil
+}
+
 func (s *stubSubStore) GetUserBySubToken(_ context.Context, _ string) (*store.User, error) {
 	return nil, store.ErrNotFound
 }
@@ -1821,6 +1825,10 @@ func (s *tier5StubSubStore) GetSetting(_ context.Context, _ string) (string, err
 
 func (s *tier5StubSubStore) ListNodes(_ context.Context) ([]store.Node, error) {
 	return s.nodes, nil
+}
+
+func (s *tier5StubSubStore) ListLBGroups(_ context.Context) ([]store.LBGroup, error) {
+	return nil, nil
 }
 
 func (s *tier5StubSubStore) GetUserBySubToken(_ context.Context, tok string) (*store.User, error) {
@@ -2192,5 +2200,188 @@ func TestSurgeTemplatesNoBuiltinPolicyOverrides(t *testing.T) {
 	if strings.Contains(mihomoRes.Body, "raw.githubusercontent.com") ||
 		!strings.Contains(mihomoRes.Body, "https://fastly.jsdelivr.net/gh/blackmatrix7/ios_rule_script@master/") {
 		t.Fatalf("expected CDN mirror URL and no raw.githubusercontent.com in mihomo full config:\n%s", mihomoRes.Body)
+	}
+}
+
+func TestLBGroupStrictSubscriptionMerge(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t)
+	r := NewRenderer(st)
+
+	adminToken, err := st.GetSetting(ctx, "admin_sub_token")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	n1 := mustNewNode(t, st, store.Node{
+		Name:      "Ali-1",
+		PublicIP:  "198.51.100.1",
+		Enabled:   true,
+		SortOrder: 1,
+		SnellConfig: protocol.SnellConfig{
+			Enabled:      true,
+			Version:      protocol.SnellVersionV5,
+			PublicPort:   18443,
+			InnerPort:    18444,
+			PSK:          "snellpsk1",
+			STLSPassword: "stlspwd1",
+			STLSSNI:      "gateway.icloud.com",
+		},
+		SSConfig: protocol.SSConfig{
+			Enabled: true,
+			TCPPort: 28443,
+			UDPPort: 28444,
+			Cipher:  protocol.CipherAES128GCM,
+			IPSK:    "Q0FOQVJZX1NTX0lQU0tfMQ==",
+			STLSSNI: "swdist.apple.com",
+		},
+	})
+	n2 := mustNewNode(t, st, store.Node{
+		Name:      "Ali-2",
+		PublicIP:  "198.51.100.2",
+		Enabled:   true,
+		SortOrder: 2,
+		SnellConfig: protocol.SnellConfig{
+			Enabled:      true,
+			Version:      protocol.SnellVersionV5,
+			PublicPort:   18443,
+			InnerPort:    18445,
+			PSK:          "snellpsk1",
+			STLSPassword: "stlspwd1",
+			STLSSNI:      "gateway.icloud.com",
+		},
+		SSConfig: protocol.SSConfig{
+			Enabled: true,
+			TCPPort: 28443,
+			UDPPort: 28444,
+			Cipher:  protocol.CipherAES128GCM,
+			IPSK:    "Q0FOQVJZX1NTX0lQU0tfMQ==",
+			STLSSNI: "swdist.apple.com",
+		},
+	})
+	standalone := mustNewNode(t, st, store.Node{
+		Name:      "Standalone-JP",
+		PublicIP:  "198.51.100.3",
+		Enabled:   true,
+		SortOrder: 3,
+		SnellConfig: protocol.SnellConfig{
+			Enabled:      true,
+			Version:      protocol.SnellVersionV5,
+			PublicPort:   18443,
+			InnerPort:    18446,
+			PSK:          "snellpsk2",
+			STLSPassword: "stlspwd2",
+			STLSSNI:      "gateway.icloud.com",
+		},
+		SSConfig: protocol.SSConfig{
+			Enabled: true,
+			TCPPort: 28443,
+			UDPPort: 28444,
+			Cipher:  protocol.CipherAES128GCM,
+			IPSK:    "Q0FOQVJZX1NTX0lQU0tfMQ==",
+			STLSSNI: "swdist.apple.com",
+		},
+	})
+
+	u := mustNewUser(t, st, "lbuser", true, 0, 0, 0, nil)
+	if _, _, err := st.ReplaceUserNodes(ctx, u.ID, []int64{n1.ID, standalone.ID}); err != nil {
+		t.Fatal(err)
+	}
+
+	grp := &store.LBGroup{
+		Name:                     "Aliyun-LB",
+		Enabled:                  true,
+		SortOrder:                0,
+		DNSDomain:                "ali.example.com",
+		DNSTTL:                   60,
+		Strategy:                 protocol.LBStrategyRemainingBalance,
+		SwitchDiffBytes:          10 << 30,
+		SwitchCooldownMinutes:    10,
+		FailoverThresholdPercent: 90,
+		SnellConfig: protocol.SnellConfig{
+			Enabled:      true,
+			Version:      protocol.SnellVersionV5,
+			PublicPort:   38443,
+			PSK:          "grouppsk",
+			Obfs:         protocol.SnellObfsOff,
+			TFO:          true,
+			STLSPassword: "groupstlspwd",
+			STLSSNI:      "gateway.icloud.com",
+		},
+		SSConfig: protocol.SSConfig{
+			Enabled: true,
+			TCPPort: 48443,
+			UDPPort: 48444,
+			Cipher:  protocol.CipherAES128GCM,
+			IPSK:    "Q0FOQVJZX1NTX0lQU0tfMQ==",
+			STLSSNI: "swdist.apple.com",
+			TFO:     true,
+		},
+	}
+	if _, err := st.CreateLBGroup(ctx, grp, []int64{n1.ID, n2.ID}); err != nil {
+		t.Fatalf("CreateLBGroup failed: %v", err)
+	}
+
+	// Admin Surge proxy list: strictly 2 entries (Aliyun-LB + Standalone-JP), hiding Ali-1 & Ali-2.
+	adminRes, err := r.RenderAdmin(ctx, adminToken, AdminRenderOptions{Mode: ModeProxy, BaseURL: "https://panel.example.com"})
+	if err != nil {
+		t.Fatalf("RenderAdmin failed: %v", err)
+	}
+	if adminRes.NodeCount != 2 {
+		t.Fatalf("expected 2 admin entries, got %d:\n%s", adminRes.NodeCount, adminRes.Body)
+	}
+	if !strings.Contains(adminRes.Body, "Aliyun-LB = snell, ali.example.com, 38443") ||
+		!strings.Contains(adminRes.Body, "Standalone-JP = snell, 198.51.100.3") ||
+		strings.Contains(adminRes.Body, "Ali-1") || strings.Contains(adminRes.Body, "Ali-2") {
+		t.Fatalf("unexpected admin subscription output:\n%s", adminRes.Body)
+	}
+
+	// User Mihomo proxy list: strictly 2 entries (Aliyun-LB + Standalone-JP).
+	mihomoRes, err := r.RenderUser(ctx, u.SubToken, "", UserRenderOptions{Target: protocol.SubTargetMihomo, Mode: ModeProxy})
+	if err != nil {
+		t.Fatalf("RenderUser Mihomo failed: %v", err)
+	}
+	if mihomoRes.NodeCount != 2 || !strings.Contains(mihomoRes.Body, "server: ali.example.com") ||
+		strings.Contains(mihomoRes.Body, "Ali-1") || strings.Contains(mihomoRes.Body, "Ali-2") {
+		t.Fatalf("unexpected user mihomo output:\n%s", mihomoRes.Body)
+	}
+
+	// User Surge proxy list: strictly 2 entries.
+	surgeRes, err := r.RenderUser(ctx, u.SubToken, "", UserRenderOptions{Target: protocol.SubTargetSurge, Mode: ModeProxy})
+	if err != nil {
+		t.Fatalf("RenderUser Surge failed: %v", err)
+	}
+	if surgeRes.NodeCount != 2 || !strings.Contains(surgeRes.Body, "Aliyun-LB = ss, ali.example.com, 48443") ||
+		strings.Contains(surgeRes.Body, "Ali-1") {
+		t.Fatalf("unexpected user surge output:\n%s", surgeRes.Body)
+	}
+
+	// User Shadowrocket base64 list: strictly 2 entries.
+	srRes, err := r.RenderUser(ctx, u.SubToken, "", UserRenderOptions{Target: protocol.SubTargetShadowrocket})
+	if err != nil {
+		t.Fatalf("RenderUser Shadowrocket failed: %v", err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(srRes.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if srRes.NodeCount != 2 || !strings.Contains(string(decoded), "@ali.example.com:48443?") ||
+		strings.Contains(string(decoded), "Ali-1") {
+		t.Fatalf("unexpected user shadowrocket output:\n%s", string(decoded))
+	}
+
+	// If both group members are paused, the group disappears while Standalone-JP stays.
+	if err := st.SetNodeTrafficPaused(ctx, n1.ID, true, "limit"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetNodeTrafficPaused(ctx, n2.ID, true, "limit"); err != nil {
+		t.Fatal(err)
+	}
+	mihomoPaused, err := r.RenderUser(ctx, u.SubToken, "", UserRenderOptions{Target: protocol.SubTargetMihomo, Mode: ModeProxy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mihomoPaused.NodeCount != 1 || strings.Contains(mihomoPaused.Body, "Aliyun-LB") {
+		t.Fatalf("expected paused group omitted from user sub, got:\n%s", mihomoPaused.Body)
 	}
 }

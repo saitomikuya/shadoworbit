@@ -68,6 +68,9 @@ const EVENT_LABELS: Record<string, string> = {
   user_quota_exhausted: '用户流量配额耗尽',
   user_expired: '用户账号过期',
   high_resource_usage: '高负载资源告警',
+  dns_lb_switched: 'DNS 负载均衡自动切换',
+  dns_lb_failover: 'DNS 故障转移（离线/超限）',
+  dns_lb_exhausted: '负载均衡分组不可用/恢复',
 };
 
 export function WebhooksSection({ embedded = false }: { embedded?: boolean }) {

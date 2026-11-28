@@ -187,6 +187,12 @@ func formatEventTypeLabel(eventType string) string {
 		return "用户账号已到期"
 	case EventHighResourceUsage:
 		return "节点资源占用过高"
+	case EventDNSLBSwitched:
+		return "DNS 负载均衡切换"
+	case EventDNSLBFailover:
+		return "DNS 故障转移"
+	case EventDNSLBExhausted:
+		return "负载均衡分组不可用"
 	case EventTest:
 		return "告警通道测试"
 	default:
@@ -232,6 +238,8 @@ func formatTargetLine(evt AlertEvent) string {
 		targetTypeLabel = "用户"
 	case TargetTypeSystem:
 		targetTypeLabel = "系统通道"
+	case TargetTypeLBGroup:
+		targetTypeLabel = "负载均衡分组"
 	}
 
 	switch {

@@ -232,6 +232,9 @@ func (h *Hub) ServeAgentWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.triggerPublicBroadcast()
+	if stillCurrent {
+		h.emitNodeStateChanged(sessCtx, node.ID)
+	}
 
 	var sessWg sync.WaitGroup
 	sessWg.Add(2)
@@ -384,6 +387,7 @@ func (h *Hub) cleanupAgentSession(s *agentSession) {
 
 	if stillOffline {
 		h.triggerPublicBroadcast()
+		h.emitNodeStateChanged(h.baseCtx, s.nodeID)
 	}
 }
 
@@ -520,6 +524,7 @@ func (h *Hub) handleAgentHello(s *agentSession, env protocol.Envelope) {
 	s.syncMu.Unlock()
 
 	h.triggerPublicBroadcast()
+	h.emitNodeStateChanged(s.ctx, s.nodeID)
 }
 
 func (h *Hub) handleAgentMetrics(s *agentSession, env protocol.Envelope) {

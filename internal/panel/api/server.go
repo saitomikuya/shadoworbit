@@ -149,6 +149,18 @@ func (s *server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/v1/admin/dns-rules/{id}", s.requireAdminJWT(s.handleUpdateDNSRuleGroup))
 	mux.HandleFunc("DELETE /api/v1/admin/dns-rules/{id}", s.requireAdminJWT(s.handleDeleteDNSRuleGroup))
 
+	// Admin Huawei Cloud DNS & Load-Balancing Groups
+	mux.HandleFunc("POST /api/v1/admin/dns-provider/huaweicloud/test", s.requireAdminJWT(s.handleTestHuaweiCloudDNS))
+	mux.HandleFunc("GET /api/v1/admin/dns-provider/huaweicloud/zones", s.requireAdminJWT(s.handleListHuaweiCloudZones))
+	mux.HandleFunc("GET /api/v1/admin/lb-groups", s.requireAdminJWT(s.handleListLBGroups))
+	mux.HandleFunc("POST /api/v1/admin/lb-groups", s.requireAdminJWT(s.handleCreateLBGroup))
+	mux.HandleFunc("GET /api/v1/admin/lb-groups/{id}", s.requireAdminJWT(s.handleGetLBGroup))
+	mux.HandleFunc("PUT /api/v1/admin/lb-groups/{id}", s.requireAdminJWT(s.handleUpdateLBGroup))
+	mux.HandleFunc("DELETE /api/v1/admin/lb-groups/{id}", s.requireAdminJWT(s.handleDeleteLBGroup))
+	mux.HandleFunc("POST /api/v1/admin/lb-groups/{id}/sync", s.requireAdminJWT(s.handleSyncLBGroup))
+	mux.HandleFunc("POST /api/v1/admin/lb-groups/{id}/pin", s.requireAdminJWT(s.handlePinLBGroup))
+	mux.HandleFunc("GET /api/v1/admin/lb-groups/{id}/logs", s.requireAdminJWT(s.handleListLBGroupLogs))
+
 	// Admin Templates
 	mux.HandleFunc("GET /api/v1/admin/templates", s.requireAdminJWT(s.handleListTemplates))
 	mux.HandleFunc("POST /api/v1/admin/templates", s.requireAdminJWT(s.handleCreateTemplate))

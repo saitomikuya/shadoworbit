@@ -235,6 +235,63 @@ SET content = REPLACE(
 WHERE content LIKE '%https://raw.githubusercontent.com/blackmatrix7/ios_rule_script/master/%';
 `,
 	},
+	{
+		version: 4,
+		name:    "004_lb_groups",
+		ddl: `
+CREATE TABLE IF NOT EXISTS lb_groups (
+    id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name                       TEXT NOT NULL UNIQUE,
+    region_tag                 TEXT NOT NULL DEFAULT '',
+    enabled                    INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
+    sort_order                 INTEGER NOT NULL DEFAULT 0,
+    dns_zone_id                TEXT NOT NULL DEFAULT '',
+    dns_zone_name              TEXT NOT NULL DEFAULT '',
+    dns_domain                 TEXT NOT NULL UNIQUE,
+    dns_ttl                    INTEGER NOT NULL DEFAULT 60 CHECK (dns_ttl BETWEEN 1 AND 86400),
+    strategy                   TEXT NOT NULL DEFAULT 'remaining_balance' CHECK (strategy IN ('remaining_balance', 'failover', 'weighted_multi')),
+    switch_diff_bytes          INTEGER NOT NULL DEFAULT 10737418240 CHECK (switch_diff_bytes >= 0),
+    switch_cooldown_minutes    INTEGER NOT NULL DEFAULT 10 CHECK (switch_cooldown_minutes >= 0),
+    failover_threshold_percent INTEGER NOT NULL DEFAULT 90 CHECK (failover_threshold_percent BETWEEN 1 AND 100),
+    snell_config               TEXT NOT NULL DEFAULT '{}',
+    ss_config                  TEXT NOT NULL DEFAULT '{}',
+    pinned_node_id             INTEGER REFERENCES nodes(id) ON DELETE SET NULL,
+    active_node_id             INTEGER REFERENCES nodes(id) ON DELETE SET NULL,
+    active_records_json        TEXT NOT NULL DEFAULT '[]',
+    last_switch_at             TEXT,
+    last_sync_at               TEXT,
+    last_sync_error            TEXT NOT NULL DEFAULT '',
+    is_exhausted               INTEGER NOT NULL DEFAULT 0 CHECK (is_exhausted IN (0, 1)),
+    created_at                 TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f000000Z', 'now')),
+    updated_at                 TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f000000Z', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_lb_groups_sort_order ON lb_groups(sort_order ASC, id ASC);
+
+CREATE TABLE IF NOT EXISTS lb_group_members (
+    group_id   INTEGER NOT NULL REFERENCES lb_groups(id) ON DELETE CASCADE,
+    node_id    INTEGER NOT NULL UNIQUE REFERENCES nodes(id) ON DELETE CASCADE,
+    priority   INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f000000Z', 'now')),
+    PRIMARY KEY (group_id, node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_lb_group_members_group_priority
+    ON lb_group_members(group_id, priority ASC, node_id ASC);
+
+CREATE TABLE IF NOT EXISTS lb_switch_logs (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id     INTEGER NOT NULL REFERENCES lb_groups(id) ON DELETE CASCADE,
+    event_type   TEXT NOT NULL,
+    from_node_id INTEGER,
+    to_node_id   INTEGER,
+    from_ips     TEXT NOT NULL DEFAULT '',
+    to_ips       TEXT NOT NULL DEFAULT '',
+    reason       TEXT NOT NULL DEFAULT '',
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f000000Z', 'now'))
+);
+CREATE INDEX IF NOT EXISTS idx_lb_switch_logs_group_created
+    ON lb_switch_logs(group_id, id DESC);
+`,
+	},
 }
 
 // Migrate applies all pending schema migrations idempotently.

@@ -14,6 +14,7 @@ import (
 
 	"snell-panel/internal/panel/auth"
 	"snell-panel/internal/panel/hub"
+	"snell-panel/internal/panel/scheduler"
 	"snell-panel/internal/panel/store"
 	"snell-panel/internal/panel/webhook"
 	"snell-panel/internal/protocol"
@@ -21,7 +22,9 @@ import (
 
 type nodeDTO struct {
 	store.Node
-	NodeToken string `json:"node_token,omitempty"`
+	NodeToken   string `json:"node_token,omitempty"`
+	LBGroupID   *int64 `json:"lb_group_id"`
+	LBGroupName string `json:"lb_group_name,omitempty"`
 }
 
 type createSnellConfigRequest struct {
@@ -148,7 +151,7 @@ type reorderNodesRequest struct {
 	NodeIDs []int64 `json:"node_ids"`
 }
 
-func (s *server) toNodeDTO(n store.Node, rawToken string) nodeDTO {
+func (s *server) toNodeDTO(n store.Node, rawToken string, group ...store.LBGroupSummary) nodeDTO {
 	if n.DNSExtraRules == nil {
 		n.DNSExtraRules = []string{}
 	}
@@ -190,10 +193,27 @@ func (s *server) toNodeDTO(n store.Node, rawToken string) nodeDTO {
 		}
 	}
 
-	return nodeDTO{
+	dto := nodeDTO{
 		Node:      n,
 		NodeToken: rawToken,
 	}
+	if len(group) > 0 && group[0].ID > 0 {
+		gid := group[0].ID
+		dto.LBGroupID = &gid
+		dto.LBGroupName = group[0].Name
+	}
+	return dto
+}
+
+func (s *server) toSingleNodeDTO(ctx context.Context, n store.Node, rawToken string) nodeDTO {
+	if grp, err := s.store.GetLBGroupByNodeID(ctx, n.ID); err == nil && grp != nil {
+		return s.toNodeDTO(n, rawToken, store.LBGroupSummary{
+			ID:      grp.ID,
+			Name:    grp.Name,
+			Enabled: grp.Enabled,
+		})
+	}
+	return s.toNodeDTO(n, rawToken)
 }
 
 func validateNodeConfig(n *store.Node) error {
@@ -299,9 +319,18 @@ func (s *server) handleListNodes(w http.ResponseWriter, r *http.Request, _ *auth
 		writeError(w, http.StatusInternalServerError, "failed to list nodes")
 		return
 	}
+	groupMap, err := s.store.ListNodeLBGroupMembership(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list node lb group membership")
+		return
+	}
 	out := make([]nodeDTO, 0, len(nodes))
 	for _, n := range nodes {
-		out = append(out, s.toNodeDTO(n, ""))
+		if g, ok := groupMap[n.ID]; ok {
+			out = append(out, s.toNodeDTO(n, "", g))
+		} else {
+			out = append(out, s.toNodeDTO(n, ""))
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -463,7 +492,7 @@ func (s *server) handleGetNode(w http.ResponseWriter, r *http.Request, _ *auth.A
 		return
 	}
 
-	writeJSON(w, http.StatusOK, s.toNodeDTO(*node, ""))
+	writeJSON(w, http.StatusOK, s.toSingleNodeDTO(r.Context(), *node, ""))
 }
 
 func (s *server) handleUpdateNode(w http.ResponseWriter, r *http.Request, _ *auth.AdminClaims) {
@@ -626,6 +655,9 @@ func (s *server) handleUpdateNode(w http.ResponseWriter, r *http.Request, _ *aut
 	if err := s.sched.EvaluateNodeThreshold(r.Context(), id); err != nil {
 		s.logger.Warn("evaluate node threshold after update failed", "node_id", id, "err", err)
 	}
+	if err := s.sched.EvaluateLBGroupForNode(r.Context(), id); err != nil {
+		s.logger.Warn("evaluate lb group after node update failed", "node_id", id, "err", err)
+	}
 	if err := s.hub.SyncNode(r.Context(), id); err != nil && !errors.Is(err, hub.ErrNodeOffline) && !errors.Is(err, hub.ErrHubClosed) {
 		s.logger.Warn("sync node after update failed", "node_id", id, "err", err)
 	}
@@ -639,7 +671,7 @@ func (s *server) handleUpdateNode(w http.ResponseWriter, r *http.Request, _ *aut
 			respNode = *latest
 		}
 	}
-	writeJSON(w, http.StatusOK, s.toNodeDTO(respNode, ""))
+	writeJSON(w, http.StatusOK, s.toSingleNodeDTO(r.Context(), respNode, ""))
 }
 
 func (s *server) handleDeleteNode(w http.ResponseWriter, r *http.Request, _ *auth.AdminClaims) {
@@ -648,6 +680,8 @@ func (s *server) handleDeleteNode(w http.ResponseWriter, r *http.Request, _ *aut
 		writeError(w, http.StatusBadRequest, "invalid node id")
 		return
 	}
+
+	formerGroup, _ := s.store.GetLBGroupByNodeID(r.Context(), id)
 
 	if err := s.store.DeleteNode(r.Context(), id); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -659,6 +693,11 @@ func (s *server) handleDeleteNode(w http.ResponseWriter, r *http.Request, _ *aut
 	}
 
 	s.hub.EvictNode(id)
+	if formerGroup != nil {
+		if _, err := s.sched.EvaluateLBGroup(r.Context(), formerGroup.ID, scheduler.LBEvalOptions{Trigger: "node_deleted"}); err != nil && !errors.Is(err, store.ErrNotFound) {
+			s.logger.Warn("evaluate lb group after node delete failed", "group_id", formerGroup.ID, "err", err)
+		}
+	}
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
@@ -701,6 +740,9 @@ func (s *server) handleResetNodeTraffic(w http.ResponseWriter, r *http.Request, 
 	if err := s.sched.EvaluateNodeThreshold(r.Context(), id); err != nil {
 		s.logger.Warn("evaluate node threshold after reset failed", "node_id", id, "err", err)
 	}
+	if err := s.sched.EvaluateLBGroupForNode(r.Context(), id); err != nil {
+		s.logger.Warn("evaluate lb group after node traffic reset failed", "node_id", id, "err", err)
+	}
 
 	if wasPaused {
 		if _, err := s.store.IncrementNodeConfigRevision(r.Context(), id); err != nil {
@@ -730,7 +772,7 @@ func (s *server) handleResetNodeTraffic(w http.ResponseWriter, r *http.Request, 
 	if s.hub != nil {
 		s.hub.BroadcastPublicStatus()
 	}
-	writeJSON(w, http.StatusOK, s.toNodeDTO(*latest, ""))
+	writeJSON(w, http.StatusOK, s.toSingleNodeDTO(r.Context(), *latest, ""))
 }
 
 func (s *server) handleCalibrateNodeTraffic(w http.ResponseWriter, r *http.Request, _ *auth.AdminClaims) {
@@ -773,6 +815,9 @@ func (s *server) handleCalibrateNodeTraffic(w http.ResponseWriter, r *http.Reque
 	if err := s.sched.EvaluateNodeThreshold(r.Context(), id); err != nil {
 		s.logger.Warn("evaluate node threshold after calibration failed", "node_id", id, "err", err)
 	}
+	if err := s.sched.EvaluateLBGroupForNode(r.Context(), id); err != nil {
+		s.logger.Warn("evaluate lb group after node traffic calibration failed", "node_id", id, "err", err)
+	}
 
 	latest, err := s.store.GetNodeByID(r.Context(), id)
 	if err != nil {
@@ -782,7 +827,7 @@ func (s *server) handleCalibrateNodeTraffic(w http.ResponseWriter, r *http.Reque
 	if s.hub != nil {
 		s.hub.BroadcastPublicStatus()
 	}
-	writeJSON(w, http.StatusOK, s.toNodeDTO(*latest, ""))
+	writeJSON(w, http.StatusOK, s.toSingleNodeDTO(r.Context(), *latest, ""))
 }
 
 func (s *server) handleNodeServiceCtl(w http.ResponseWriter, r *http.Request, _ *auth.AdminClaims) {

@@ -321,8 +321,23 @@ export function UsersPage() {
     }
   };
 
-  const toggleInArray = (arr: number[], id: number): number[] =>
-    arr.includes(id) ? arr.filter((x) => x !== id) : [...arr, id];
+  const toggleInArray = (arr: number[], id: number): number[] => {
+    const clicked = nodes.find((n) => n.id === id);
+    if (clicked?.lb_group_id) {
+      const groupSSIds = ssEnabledNodes
+        .filter((n) => n.lb_group_id === clicked.lb_group_id)
+        .map((n) => n.id);
+      if (groupSSIds.length > 0) {
+        const removing = arr.includes(id);
+        if (removing) {
+          const groupSet = new Set(groupSSIds);
+          return arr.filter((x) => !groupSet.has(x));
+        }
+        return Array.from(new Set([...arr, ...groupSSIds]));
+      }
+    }
+    return arr.includes(id) ? arr.filter((x) => x !== id) : [...arr, id];
+  };
 
   const adminSurgeTemplates = templates.filter((t) => t.client_type === 'surge_admin');
   const adminSubUrl = adminSubToken
@@ -1222,14 +1237,21 @@ export function UsersPage() {
                 </div>
               ) : (
                 ssEnabledNodes.map((n) => (
-                  <label key={n.id} className="flex items-center gap-2 rounded px-1.5 py-1 text-xs hover:bg-slate-50 dark:hover:bg-slate-800">
-                    <input
-                      type="checkbox"
-                      checked={selectedNodeIds.includes(n.id)}
-                      onChange={() => setSelectedNodeIds((prev) => toggleInArray(prev, n.id))}
-                      className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600"
-                    />
-                    <span className="truncate">{n.name}</span>
+                  <label key={n.id} className="flex items-center justify-between gap-2 rounded px-1.5 py-1 text-xs hover:bg-slate-50 dark:hover:bg-slate-800">
+                    <span className="flex min-w-0 items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={selectedNodeIds.includes(n.id)}
+                        onChange={() => setSelectedNodeIds((prev) => toggleInArray(prev, n.id))}
+                        className="h-3.5 w-3.5 rounded border-slate-300 text-indigo-600"
+                      />
+                      <span className="truncate">{n.name}</span>
+                    </span>
+                    {n.lb_group_name && (
+                      <span className="shrink-0 rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-950/70 dark:text-indigo-300">
+                        {n.lb_group_name}
+                      </span>
+                    )}
                   </label>
                 ))
               )}
@@ -1286,18 +1308,25 @@ export function UsersPage() {
                   key={n.id}
                   className="flex cursor-pointer items-center justify-between rounded-lg border border-slate-200 px-3 py-2 text-sm hover:bg-slate-50 dark:border-slate-800 dark:hover:bg-slate-800/60"
                 >
-                  <span className="flex items-center gap-2">
+                  <span className="flex min-w-0 items-center gap-2">
                     <input
                       type="checkbox"
                       checked={matrixNodeIds.includes(n.id)}
                       onChange={() => setMatrixNodeIds((prev) => toggleInArray(prev, n.id))}
                       className="h-4 w-4 rounded border-slate-300 text-indigo-600"
                     />
-                    <span>{n.name}</span>
+                    <span className="truncate">{n.name}</span>
                   </span>
-                  {n.region_tag && (
-                    <span className="text-[11px] font-mono uppercase text-slate-400">{n.region_tag}</span>
-                  )}
+                  <span className="flex shrink-0 items-center gap-1.5">
+                    {n.lb_group_name && (
+                      <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-medium text-indigo-700 dark:bg-indigo-950/70 dark:text-indigo-300">
+                        {n.lb_group_name}
+                      </span>
+                    )}
+                    {n.region_tag && (
+                      <span className="text-[11px] font-mono uppercase text-slate-400">{n.region_tag}</span>
+                    )}
+                  </span>
                 </label>
               ))
             )}

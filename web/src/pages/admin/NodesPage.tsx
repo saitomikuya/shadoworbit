@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   ArrowDown,
   ArrowUp,
@@ -597,6 +597,15 @@ export function NodesPage() {
                         <span className="shrink-0 whitespace-nowrap rounded bg-slate-100 px-2 py-0.5 text-[11px] font-semibold uppercase text-slate-600 dark:bg-slate-800 dark:text-slate-300">
                           {node.region_tag}
                         </span>
+                      )}
+                      {node.lb_group_id && (
+                        <Link
+                          to="/admin/lb-groups"
+                          className="shrink-0 whitespace-nowrap rounded bg-indigo-50 px-2 py-0.5 text-[11px] font-medium text-indigo-700 ring-1 ring-indigo-200 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:text-indigo-300 dark:ring-indigo-800/70"
+                          title="该节点已加入 DNS 负载均衡分组，对外订阅统一使用分组域名"
+                        >
+                          分组: {node.lb_group_name || `#${node.lb_group_id}`}
+                        </Link>
                       )}
                       <NodeStatusBadge status={node.status} />
                       <span

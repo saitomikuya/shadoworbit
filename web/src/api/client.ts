@@ -9,10 +9,15 @@ import type {
   DailyTrafficQuery,
   DNSRuleGroup,
   DNSRuleGroupRequest,
+  HuaweiCloudTestResponse,
+  HuaweiCloudZone,
   InstallCmdResponse,
   KernelCatalog,
   KernelUpdateBatchResult,
   KernelUpdateRequest,
+  LBGroupDTO,
+  LBGroupUpsertRequest,
+  LBSwitchLog,
   LoginRequest,
   LoginResponse,
   NodeDTO,
@@ -31,6 +36,7 @@ import type {
   TemplateClientType,
   TrafficUsageLogQuery,
   TrafficUsageLogsResponse,
+  UpdateSettingsRequest,
   UpdateUserRequest,
   UserDTO,
   UserTrafficBreakdownResponse,
@@ -344,6 +350,31 @@ export const api = {
 
   // System Settings
   getSettings: () => request<SystemSettings>('/api/v1/admin/settings'),
-  updateSettings: (payload: Partial<SystemSettings>) =>
+  updateSettings: (payload: UpdateSettingsRequest) =>
     request<SystemSettings>('/api/v1/admin/settings', { method: 'PUT', body: payload }),
+
+  // Huawei Cloud DNS & LB Groups
+  testHuaweiCloudDNS: (payload?: { endpoint?: string; ak?: string; sk?: string }) =>
+    request<HuaweiCloudTestResponse>('/api/v1/admin/dns-provider/huaweicloud/test', {
+      method: 'POST',
+      body: payload ?? {},
+    }),
+  listHuaweiCloudZones: () => request<HuaweiCloudZone[]>('/api/v1/admin/dns-provider/huaweicloud/zones'),
+  listLBGroups: () => request<LBGroupDTO[]>('/api/v1/admin/lb-groups'),
+  getLBGroup: (id: number) => request<LBGroupDTO>(`/api/v1/admin/lb-groups/${id}`),
+  createLBGroup: (payload: LBGroupUpsertRequest) =>
+    request<LBGroupDTO>('/api/v1/admin/lb-groups', { method: 'POST', body: payload }),
+  updateLBGroup: (id: number, payload: LBGroupUpsertRequest) =>
+    request<LBGroupDTO>(`/api/v1/admin/lb-groups/${id}`, { method: 'PUT', body: payload }),
+  deleteLBGroup: (id: number) =>
+    request<{ status: string }>(`/api/v1/admin/lb-groups/${id}`, { method: 'DELETE' }),
+  syncLBGroup: (id: number) =>
+    request<LBGroupDTO>(`/api/v1/admin/lb-groups/${id}/sync`, { method: 'POST' }),
+  pinLBGroup: (id: number, nodeId: number | null) =>
+    request<LBGroupDTO>(`/api/v1/admin/lb-groups/${id}/pin`, {
+      method: 'POST',
+      body: { node_id: nodeId },
+    }),
+  listLBGroupLogs: (id: number, limit = 50) =>
+    request<LBSwitchLog[]>(`/api/v1/admin/lb-groups/${id}/logs?limit=${limit}`),
 };
